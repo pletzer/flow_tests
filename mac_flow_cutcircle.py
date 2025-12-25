@@ -108,16 +108,23 @@ def write_vtr(fname, u, v, p):
     grid.SetYCoordinates(numpy_support.numpy_to_vtk(y))
     grid.SetZCoordinates(numpy_support.numpy_to_vtk(z))
 
+    # pressure
     p_vtk = numpy_support.numpy_to_vtk(p.ravel(order='F'), deep=True)
     p_vtk.SetName('pressure')
     grid.GetCellData().AddArray(p_vtk)
 
+    # velocity
     vel = np.zeros((Nx,Ny,3))
     vel[:,:,0] = uc
     vel[:,:,1] = vc
     vel_vtk = numpy_support.numpy_to_vtk(vel.reshape(-1,3,order='F'), deep=True)
     vel_vtk.SetName('velocity')
     grid.GetCellData().AddArray(vel_vtk)
+
+    # alpha masking (cut-cell fraction)
+    alpha_vtk = numpy_support.numpy_to_vtk(alpha.ravel(order='F'), deep=True)
+    alpha_vtk.SetName('alpha')
+    grid.GetCellData().AddArray(alpha_vtk)
 
     writer = vtk.vtkXMLRectilinearGridWriter()
     writer.SetFileName(fname)
