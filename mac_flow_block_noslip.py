@@ -44,55 +44,21 @@ def cell_center_velocity(u, v):
     return uc, vc
 
 def apply_velocity_bc(u, v):
-    # Bottom wall (slip)
-    v[:, 0] = 0.0
-    u[:, 0] = u[:, 1]
-
-    # Top wall (slip)
+    # No-slip top/bottom walls
+    u[:, 0]  = 0.0
+    u[:, -1] = 0.0
+    v[:, 0]  = 0.0
     v[:, -1] = 0.0
-    u[:, -1] = u[:, -2]
-
     # Inlet/outlet: velocity is free (pressure-driven)
 
-def enforce_slip_obstacle(u, v, solid):
-    Nx, Ny = solid.shape
-
-    # --------------------------------
-    # u-velocity (vertical faces)
-    # --------------------------------
-    for i in range(1, Nx):
-        for j in range(Ny):
-            left_solid  = solid[i-1, j]
-            right_solid = solid[i, j]
-
-            if left_solid and not right_solid:
-                # Normal face → no penetration
-                u[i, j] = 0.0
-
-            elif right_solid and not left_solid:
-                u[i, j] = 0.0
-
-            elif left_solid and right_solid:
-                # Inside obstacle
-                u[i, j] = 0.0
-
-    # --------------------------------
-    # v-velocity (horizontal faces)
-    # --------------------------------
+def enforce_obstacle(u, v):
     for i in range(Nx):
-        for j in range(1, Ny):
-            bottom_solid = solid[i, j-1]
-            top_solid    = solid[i, j]
-
-            if bottom_solid and not top_solid:
-                v[i, j] = 0.0
-
-            elif top_solid and not bottom_solid:
-                v[i, j] = 0.0
-
-            elif bottom_solid and top_solid:
-                v[i, j] = 0.0
-
+        for j in range(Ny):
+            if solid[i, j]:
+                u[i, j]     = 0.0
+                u[i+1, j]   = 0.0
+                v[i, j]     = 0.0
+                v[i, j+1]   = 0.0
 
 def apply_pressure_bc(p):
     # Dirichlet inlet/outlet
@@ -146,7 +112,7 @@ def write_vtr(fname, u, v, p):
 for step in range(nsteps):
 
     apply_velocity_bc(u, v)
-    enforce_slip_obstacle(u, v, solid)
+    enforce_obstacle(u, v)
 
     # --------------------------------------------------------
     # Predictor step (u*)
@@ -193,7 +159,7 @@ for step in range(nsteps):
             )
 
     apply_velocity_bc(u_star, v_star)
-    enforce_slip_obstacle(u_star, v_star, solid)
+    enforce_obstacle(u_star, v_star)
 
     # --------------------------------------------------------
     # Pressure Poisson equation
@@ -237,11 +203,11 @@ for step in range(nsteps):
             v[i, j] = v_star[i, j] - dt * (p[i, j] - p[i, j-1]) / dy
 
     apply_velocity_bc(u, v)
-    enforce_slip_obstacle(u, v, solid)
+    enforce_obstacle(u, v)
 
     # --------------------------------------------------------
     # Output
     # --------------------------------------------------------
     if step % vtk_stride == 0:
-        write_vtr(f"channelslip_{step:05d}.vtr", u, v, p)
+        write_vtr(f"channel_{step:05d}.vtr", u, v, p)
         print(f"Step {step}")
