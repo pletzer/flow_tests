@@ -1,6 +1,7 @@
 import numpy as np
 import vtk
 from vtk.util import numpy_support
+from staggered_io import save_staggered_fields
 
 # ============================================================
 # Parameters
@@ -211,4 +212,5 @@ for step in range(nsteps):
     # ------------------------------
     if step % vtk_stride == 0:
         write_vtr(f"channel_cutcircle_{step:05d}.vtr", u,v,p)
+        save_staggered_fields(f"channel_cutcircle_{step:05d}.npz", x, y, u, v, Ax, Ay)
         print(f"Step {step}")
