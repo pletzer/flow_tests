@@ -1,40 +1,52 @@
 import numpy as np
 
-def iterp_velocity_mimetic(x, y, u, v, xyi):
+def interp_velocity_mimetic(x, y, u, v, Ax, Ay, xyi, alpha_min=0.0):
     """
-    Interpolate face centred u, v (Arakawa C) velocity
-    @param x 1d x axis
-    @param y 1d y axis
-    @param u 2d x-velocity of size (Ny, Nx + 1)
-    @param v 2d y-velocity of size (Ny + 1, Nx)
-    @param xyz target points [(x0, y0), (x1, y1)...]
+    Mimetic interpolation of MAC velocities on a staggered grid with nodal coordinates.
+    
+    x: 1d array of nodal x coordinates, length Nx+1
+    y: 1d array of nodal y coordinates, length Ny+1
+    u: x-velocity, shape (Nx+1, Ny)
+    v: y-velocity, shape (Nx, Ny+1)
+    Ax, Ay: face fractions, same shapes as u and v
+    xyi: target points, shape (Npoints, 2)
+    alpha_min: fraction threshold for blocked faces
     """
-    # assume uniform grid
-    nx, ny = v.shape[1], u.shape[0] # number of cells
-    nx1, ny1 = nx + 1, ny + 1
-    dx, dy = x[1] - x[0], y[1] - y[0]
-    xmin, ymin = x[0], y[0]
+    Nx = len(x) - 1
+    Ny = len(y) - 1
 
-    # get the x, y target points
-    xi, yi = xyi[:, 0], xyi[:, 1]
+    xi, yi = xyi[:,0], xyi[:,1]
 
-    # compute the target points in index space
-    ifloat, jfloat = (xi - xmin)/dx, (yi - ymin)/dy
+    # Compute indices in face arrays
+    ifloat_u = np.searchsorted(x, xi) - 1   # u has Nx+1 faces
+    jfloat_u = np.searchsorted(y[:-1] + np.diff(y)/2, yi)  # interpolate along y
+    ifloat_v = np.searchsorted(x[:-1] + np.diff(x)/2, xi)  # interpolate along x
+    jfloat_v = np.searchsorted(y, yi) - 1   # v has Ny+1 faces
 
-    # make sure the cells are inside the domain
-    ifloat = np.maximum(0.0, np.minimum(ifloat, nx - 1.0))
-    jfloat = np.maximum(0.0, np.minimum(jfloat, ny - 1.0))
+    # Clip to valid ranges
+    i_u = np.clip(ifloat_u, 0, Nx-1)
+    j_u = np.clip(jfloat_u, 0, Ny-1)
+    i_v = np.clip(ifloat_v, 0, Nx-1)
+    j_v = np.clip(jfloat_v, 0, Ny-1)
 
-    # locate the cell indices for the target points
-    iint, jint = np.floor(ifloat).astype(int), np.floor(jfloat).astype(int)
-    # ifloat and jfloat should always be one cell inside
+    # Local coordinates for linear interpolation
+    xsi_u = (xi - x[i_u]) / (x[i_u+1] - x[i_u])
+    eta_v = (yi - y[j_v]) / (y[j_v+1] - y[j_v])
 
-    # parametric coordinates of the cell (range 0...1)
-    xsi, eta = ifloat - iint, jfloat - jint
+    # --- Interpolate fluxes ---
+    Fx = (1.0 - xsi_u) * (Ax[i_u,j_u]*u[i_u,j_u]) + xsi_u * (Ax[i_u+1,j_u]*u[i_u+1,j_u])
+    Fy = (1.0 - eta_v) * (Ay[i_v,j_v]*v[i_v,j_v]) + eta_v * (Ay[i_v,j_v+1]*v[i_v,j_v+1])
 
-    # ui is piecewise constant in y and piecewise linear in x
-    ui = (1.0 - xsi)*u[jint, iint] + xsi*u[jint, iint + 1]
-    # vi is piecewise constant in x and piecewise linear in y
-    vi = (1.0 - eta)*v[jint, iint] + eta*v[jint + 1, iint]
+    # Allocate outputs
+    ui = np.zeros_like(Fx)
+    vi = np.zeros_like(Fy)
+
+    # Masks to avoid division by zero
+    mask_u = Ax[i_u,j_u] > alpha_min
+    mask_v = Ay[i_v,j_v] > alpha_min
+
+    ui[mask_u] = Fx[mask_u] / Ax[i_u,j_u][mask_u]
+    vi[mask_v] = Fy[mask_v] / Ay[i_v,j_v][mask_v]
 
     return ui, vi
+
