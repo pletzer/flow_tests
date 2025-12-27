@@ -5,7 +5,7 @@ from vtk.util import numpy_support
 # ============================================================
 # Parameters
 # ============================================================
-Nx, Ny = 128, 64
+Nx, Ny = 100, 50
 Lx, Ly = 2.0, 1.0
 dx, dy = Lx / Nx, Ly / Ny
 
@@ -31,8 +31,11 @@ p = np.zeros((Nx, Ny))       # pressure (cells)
 # ============================================================
 solid = np.zeros((Nx, Ny), dtype=bool)
 
-i0, i1 = int(0.8 / dx), int(1.0 / dx)
-j0, j1 = int(0.3 / dy), int(0.7 / dy)
+# i0, i1 = int(0.8 / dx), int(1.0 / dx)
+# j0, j1 = int(0.0 / dy), int(0.4 / dy)
+i0, i1 = int(0.3*Lx/dx), int(0.5*Lx/dx)
+j0, j1 = int(0.0*Ly/dy), int(0.6*Ly/dy)
+# the obstacle is aligned to the cells
 solid[i0:i1, j0:j1] = True
 
 # ============================================================
