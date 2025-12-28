@@ -73,7 +73,8 @@ def apply_velocity_bc(u, v):
     v[:,-1] = 0.0
     u[:,-1] = u[:,-2]
 
-def enforce_slip_obstacle(u, v, alpha):
+def enforce_slip_obstacle(u, v, alpha, Ax, Ay):
+
     Nx, Ny = alpha.shape
 
     # u-velocity
