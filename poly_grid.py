@@ -210,6 +210,54 @@ def check_edge_coverage(poly, cell_segments, dx, dy, tol=1e-12):
     return ok, reports
 
 
+def flux_poly_matrices(polygon, Nx, Ny, dx, dy):
+    """
+    Compute the sparse matrices to estimate the flux on the surface of a polygon
+    return umatrix, vmatrix
+    """
+    umatrix = {}
+    vmatrix = {}
+    # compute the intersections between the polygon and the grid
+    cell_segments = polygon_cell_segments_parametric(polygon, Nx, Ny, dx, dy)
+    for cell, segments in cell_segments.items():
+        i, j = cell
+        for seg in segments:
+            xsi0, eta0, xsi1, eta1 = seg
+            # flux for equation (10) in https://journals.ametsoc.org/view/journals/mwre/147/1/mwr-d-18-0146.1.xml
+            dxsi, deta = xsi1 - xsi0, eta1 - eta0
+            axsi, aeta = 0.5*(xsi0 + xsi1), 0.5*(eta0 + eta1)
+            umatrix[(i,j)] = umatrix.get((i,j), 0.0) + deta*(1. - axsi)
+            umatrix[(i+1,j)] = umatrix.get((i+1,j), 0.0) + deta*axsi
+            vmatrix[(i,j)] = vmatrix.get((i,j), 0.0) + dxsi*(1. - aeta)
+            vmatrix[(i,j+1)] = vmatrix.get((i,j+1), 0.0) + dxsi*aeta
+    return umatrix, vmatrix
+
+
+def flux(polygon, Nx, Ny, dx, dy, u, v):
+    """
+    Compute the total flux across a polygon for a uniform grid
+    polygon: [(x0, y0), (x1, y1)...] open polygon points in anticlockwise direction.
+    Nx, Ny number og grid cells
+    dx, dy grid space
+    u, v Arakawa staggered velocity field in x and y directions. u has dimensions (Nx+1, Ny) and v has dimensions (Nx, Ny+1)
+    returns the total flux
+    """
+    # compute the sparse interpolation matrics
+    umatrix, vmatrix = flux_poly_matrices(polygon, Nx, Ny, dx, dy)
+    # turn the velocities into face fluxes
+    uflux = u*dy
+    vflux = v*dx
+    # sparse matrix multiplication
+    tot_flux = 0.0
+    for cell in umatrix:
+        i, j = cell
+        tot_flux += umatrix[cell]*uflux[i, j]
+    for cell in vmatrix:
+        i, j = cell
+        tot_flux += vmatrix[cell]*vflux[i, j]
+    return tot_flux
+
+
 #################################################################
 def test1():
     Lx, Ly = 20.0, 10.0
@@ -220,6 +268,12 @@ def test1():
     print(cell_segments)
     print(check_polygon_coverage_length(polygon, cell_segments, dx, dy))
     print(check_edge_coverage(polygon, cell_segments, dx, dy))
+    umatrix, vmatrix = flux_poly_matrices(polygon, Nx, Ny, dx, dy)
+    rng = np.random.default_rng(seed=42)
+    u = rng.random((Nx+1, Ny))
+    v = rng.random((Nx, Ny+1))
+    total_flux = flux(polygon, Nx, Ny, dx, dy, u, v)
+    print(f'total_flux = {total_flux}')
 
 if __name__ == '__main__':
     test1()
