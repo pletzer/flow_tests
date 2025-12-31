@@ -1,6 +1,7 @@
 import numpy as np
 from collections import defaultdict
 
+
 # ------------------------------------------------------------
 # Utilities
 # ------------------------------------------------------------
@@ -57,13 +58,31 @@ def clip_segment_to_box(p0, p1, xmin, xmax, ymin, ymax):
     q1 = np.array([x0 + t1*dx, y0 + t1*dy])
     return q0, q1
 
+def polygon_edge_lengths(polygon):
+    polygon = np.asarray(polygon)
+    lengths = []
+    for k in range(len(polygon)):
+        p0 = polygon[k]
+        p1 = polygon[(k+1) % len(polygon)]
+        lengths.append(np.linalg.norm(p1 - p0))
+    return np.array(lengths)
+
+def clipped_segment_length(i, j, seg, dx, dy):
+    xi0, eta0, xi1, eta1 = seg
+    x0 = (i + xi0) * dx
+    y0 = (j + eta0) * dy
+    x1 = (i + xi1) * dx
+    y1 = (j + eta1) * dy
+    return np.hypot(x1 - x0, y1 - y0)
+
 def polygon_cell_segments_parametric(
-    polygon, Nx, Ny, dx, dy
+    polygon, Nx, Ny, dx, dy, debug=False
 ):
     """
     Returns:
         dict[(i,j)] = [(xi0,eta0,xi1,eta1), ...]
     """
+    GEOM_TOL = 1e-10 * min(dx, dy)
 
     polygon = ensure_ccw(np.asarray(polygon))
     segments = defaultdict(list)
@@ -106,8 +125,101 @@ def polygon_cell_segments_parametric(
                 xi1  = (q1[0] - cx0) / dx
                 eta1 = (q1[1] - cy0) / dy
 
-                segments[(i,j)].append(
-                    (xi0, eta0, xi1, eta1)
-                )
+                seg = (xi0, eta0, xi1, eta1)
+                subsegment_length = clipped_segment_length(i, j, seg, dx, dy)
+                if subsegment_length > GEOM_TOL:
+                    segments[(i,j)].append(seg)
+                elif debug:
+                    print(f"Dropped degenerate segment in cell {(i,j)}: {seg}")
 
     return dict(segments)
+
+
+def check_polygon_coverage_length(polygon, cell_segments, dx, dy, tol=1e-10):
+    poly = ensure_ccw(np.asarray(polygon))
+
+    # original length
+    L_poly = polygon_edge_lengths(poly).sum()
+
+    # reconstructed length
+    L_clip = 0.0
+    for (i, j), segs in cell_segments.items():
+        for seg in segs:
+            L_clip += clipped_segment_length(i, j, seg, dx, dy)
+
+    rel_err = abs(L_clip - L_poly) / max(L_poly, 1e-14)
+
+    return {
+        "L_polygon": L_poly,
+        "L_clipped": L_clip,
+        "relative_error": rel_err,
+        "ok": rel_err < tol
+    }
+
+def check_edge_coverage(poly, cell_segments, dx, dy, tol=1e-12):
+    poly = ensure_ccw(np.asarray(poly))
+    ok = True
+    reports = []
+
+    for k in range(len(poly)):
+        p0 = poly[k]
+        p1 = poly[(k+1) % len(poly)]
+        edge_vec = p1 - p0
+        L = np.linalg.norm(edge_vec)
+        if L < tol:
+            continue
+
+        intervals = []
+
+        for (i, j), segs in cell_segments.items():
+            for seg in segs:
+                # reconstruct physical points
+                xi0, eta0, xi1, eta1 = seg
+                q0 = np.array([(i + xi0)*dx, (j + eta0)*dy])
+                q1 = np.array([(i + xi1)*dx, (j + eta1)*dy])
+
+                # check colinearity
+                v0 = q0 - p0
+                v1 = q1 - p0
+                cross = abs(np.cross(edge_vec, v0)) / L
+                if cross > 1e-10:
+                    continue
+
+                s0 = np.dot(v0, edge_vec) / (L*L)
+                s1 = np.dot(v1, edge_vec) / (L*L)
+                intervals.append((min(s0,s1), max(s0,s1)))
+
+        if not intervals:
+            ok = False
+            reports.append((k, "no coverage"))
+            continue
+
+        intervals.sort()
+        s = 0.0
+        for a, b in intervals:
+            if a > s + tol:
+                ok = False
+                reports.append((k, f"gap at s={s:.3e}"))
+                break
+            s = max(s, b)
+
+        if s < 1.0 - tol:
+            ok = False
+            reports.append((k, f"ends at s={s:.3e}"))
+
+    return ok, reports
+
+
+#################################################################
+def test1():
+    Lx, Ly = 20.0, 10.0
+    Nx, Ny = 20, 10
+    dx, dy = Lx/Nx, Ly/Ny
+    polygon = [(0., 0.), (1.0, 0.), (1.0, 1.0)]
+    cell_segments = polygon_cell_segments_parametric(polygon, Nx, Ny, dx, dy)
+    print(cell_segments)
+    print(check_polygon_coverage_length(polygon, cell_segments, dx, dy))
+    print(check_edge_coverage(polygon, cell_segments, dx, dy))
+
+if __name__ == '__main__':
+    test1()
