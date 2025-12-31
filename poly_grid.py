@@ -233,17 +233,13 @@ def flux_poly_matrices(polygon, Nx, Ny, dx, dy):
     return umatrix, vmatrix
 
 
-def flux(polygon, Nx, Ny, dx, dy, u, v):
+def flux(umatrix, vmatrix, u, v, dx, dy):
     """
     Compute the total flux across a polygon for a uniform grid
-    polygon: [(x0, y0), (x1, y1)...] open polygon points in anticlockwise direction.
-    Nx, Ny number og grid cells
-    dx, dy grid space
+    umatrix, vmatrix matrices returned by flux_poly_matrices
     u, v Arakawa staggered velocity field in x and y directions. u has dimensions (Nx+1, Ny) and v has dimensions (Nx, Ny+1)
     returns the total flux
     """
-    # compute the sparse interpolation matrics
-    umatrix, vmatrix = flux_poly_matrices(polygon, Nx, Ny, dx, dy)
     # turn the velocities into face fluxes
     uflux = u*dy
     vflux = v*dx
@@ -272,7 +268,7 @@ def test1():
     rng = np.random.default_rng(seed=42)
     u = rng.random((Nx+1, Ny))
     v = rng.random((Nx, Ny+1))
-    total_flux = flux(polygon, Nx, Ny, dx, dy, u, v)
+    total_flux = flux(umatrix, vmatrix, u, v, dx, dy)
     print(f'total_flux = {total_flux}')
 
 if __name__ == '__main__':
