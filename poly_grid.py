@@ -218,18 +218,28 @@ def flux_poly_matrices(polygon, Nx, Ny, dx, dy):
     umatrix = {}
     vmatrix = {}
     # compute the intersections between the polygon and the grid
+    # {(i,j): [(xsi0, eta0, xsi1, eta1), ...]}
     cell_segments = polygon_cell_segments_parametric(polygon, Nx, Ny, dx, dy)
+
+    # iterate over all the intersected cells
     for cell, segments in cell_segments.items():
+        # cell indices
         i, j = cell
+        # iterate over the segments in the cell
         for seg in segments:
+            # get the start/end parametric coordinates of the subsegment
             xsi0, eta0, xsi1, eta1 = seg
-            # flux for equation (10) in https://journals.ametsoc.org/view/journals/mwre/147/1/mwr-d-18-0146.1.xml
+
+            # use weights of Eq (10) in https://journals.ametsoc.org/view/journals/mwre/147/1/mwr-d-18-0146.1.xml
             dxsi, deta = xsi1 - xsi0, eta1 - eta0
             axsi, aeta = 0.5*(xsi0 + xsi1), 0.5*(eta0 + eta1)
-            umatrix[(i,j)] = umatrix.get((i,j), 0.0) + deta*(1. - axsi)
+            # x flux
+            umatrix[(i  ,j)] = umatrix.get((i  ,j), 0.0) + deta*(1. - axsi)
             umatrix[(i+1,j)] = umatrix.get((i+1,j), 0.0) + deta*axsi
-            vmatrix[(i,j)] = vmatrix.get((i,j), 0.0) + dxsi*(1. - aeta)
+            # y flux
+            vmatrix[(i,j  )] = vmatrix.get((i,j  ), 0.0) + dxsi*(1. - aeta)
             vmatrix[(i,j+1)] = vmatrix.get((i,j+1), 0.0) + dxsi*aeta
+
     return umatrix, vmatrix
 
 
