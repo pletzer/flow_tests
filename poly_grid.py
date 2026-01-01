@@ -263,6 +263,44 @@ def flux(umatrix, vmatrix, u, v, dx, dy):
         tot_flux += vmatrix[cell]*vflux[i, j]
     return tot_flux
 
+def is_inside_polygon(poly, point):
+    """
+    Determines if a point is inside a polygon using Ray Casting.
+    
+    Args:
+        poly: List of (x, y) tuples representing the polygon vertices.
+        point: Tuple (x, y) representing the point to check.
+    Returns:
+        bool: True if inside, False otherwise.
+    """
+    n = len(poly)
+    inside = False
+    x, y = point
+
+    # Loop through each edge of the polygon
+    for i in range(n):
+        # Current vertex and the next vertex (looping back to the start)
+        x1, y1 = poly[i]
+        x2, y2 = poly[(i + 1) % n]
+
+        # Check if the ray intersects the edge
+        # 1. Is the point's Y-coordinate between the edge's Y-coordinates?
+        # 2. Is the point's X-coordinate to the left of the intersection point?
+        if min(y1, y2) < y <= max(y1, y2):
+            if x <= max(x1, x2):
+                # Calculate the actual x-intersection of the edge with the ray
+                if y1 != y2:
+                    x_inters = (y - y1) * (x2 - x1) / (y2 - y1) + x1
+                
+                # If the ray is to the left of the intersection, toggle state
+                if x1 == x2 or x <= x_inters:
+                    inside = not inside
+
+    return inside
+
+# Example Usage:
+# square = [(0, 0), (10, 0), (10, 10), (0, 10)]
+# print(is_inside_polygon(square, (5, 5))) # Returns True
 
 #################################################################
 def test1():

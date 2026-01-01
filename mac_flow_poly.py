@@ -2,11 +2,12 @@ import numpy as np
 import vtk
 from vtk.util import numpy_support
 from numba import njit, prange
+from poly_grid import is_inside_polygon
 
 # ============================================================
 # Parameters
 # ============================================================
-Nx, Ny = 40, 20
+Nx, Ny = 100, 50 #40, 20
 Lx, Ly = 2.0, 1.0
 dx, dy = Lx / Nx, Ly / Ny
 
@@ -16,7 +17,7 @@ nu = 0.01
 p_in  = 1.0     # inlet pressure
 p_out = 0.0     # outlet pressure
 
-nsteps  = 400
+nsteps  = 1001
 p_iters = 80
 vtk_stride = 100
 
@@ -30,14 +31,22 @@ p = np.zeros((Nx, Ny))       # pressure (cells)
 # ============================================================
 # Obstacle (cell-centered mask)
 # ============================================================
-solid = np.zeros((Nx, Ny), dtype=bool)
+poly = [(0.3*Lx, 0.0*Ly), (0.5*Lx, 0.0*Ly), (0.5*Lx, 0.6*Ly), (0.3*Lx, 0.6*Ly)]
 
-# i0, i1 = int(0.8 / dx), int(1.0 / dx)
-# j0, j1 = int(0.0 / dy), int(0.4 / dy)
-i0, i1 = int(0.3*Lx/dx), int(0.5*Lx/dx)
-j0, j1 = int(0.0*Ly/dy), int(0.6*Ly/dy)
-# the obstacle is aligned to the cells
-solid[i0:i1, j0:j1] = True
+# set the mask
+solid = np.zeros((Nx, Ny), dtype=bool)
+for j in range(Ny):
+    for i in range(Nx):
+        xy = ((i + 0.5)*dx, (j + 0.5)*dy)
+        if is_inside_polygon(poly, xy):
+            solid[i, j] = True
+
+# # i0, i1 = int(0.8 / dx), int(1.0 / dx)
+# # j0, j1 = int(0.0 / dy), int(0.4 / dy)
+# i0, i1 = int(0.3*Lx/dx), int(0.5*Lx/dx)
+# j0, j1 = int(0.0*Ly/dy), int(0.6*Ly/dy)
+# # the obstacle is aligned to the cells
+# solid[i0:i1, j0:j1] = True
 
 # ============================================================
 # Utility functions
