@@ -5,7 +5,7 @@ from vtk.util import numpy_support
 # ============================================================
 # Parameters
 # ============================================================
-Nx, Ny = 100, 50
+Nx, Ny = 40, 20
 Lx, Ly = 2.0, 1.0
 dx, dy = Lx / Nx, Ly / Ny
 
@@ -97,14 +97,88 @@ def enforce_slip_obstacle(u, v, solid):
                 v[i, j] = 0.0
 
 
-def apply_pressure_bc(p):
-    # Dirichlet inlet/outlet
-    p[0, :]  = p_in
-    p[-1, :] = p_out
+def predictor(Nx, Ny, dx, dy, dt, nu, u, v):
+    u_star = u.copy()
+    v_star = v.copy()
 
-    # Neumann top/bottom walls
-    p[:, 0]  = p[:, 1]
-    p[:, -1] = p[:, -2]
+    # u-momentum
+    for i in range(1, Nx):
+        for j in range(1, Ny-1):
+            u_c = u[i, j]
+            v_c = 0.25 * (v[i-1, j] + v[i, j] +
+                          v[i-1, j+1] + v[i, j+1])
+
+            dudx = (u[i, j] - u[i-1, j]) / dx
+            dudy = (u[i, j] - u[i, j-1]) / dy
+
+            lapu = (
+                (u[i+1, j] - 2*u[i, j] + u[i-1, j]) / dx**2 +
+                (u[i, j+1] - 2*u[i, j] + u[i, j-1]) / dy**2
+            )
+
+            u_star[i, j] = u[i, j] + dt * (
+                -u_c * dudx - v_c * dudy + nu * lapu
+            )
+
+    # v-momentum
+    for i in range(1, Nx-1):
+        for j in range(1, Ny):
+            u_c = 0.25 * (u[i, j-1] + u[i+1, j-1] +
+                          u[i, j]   + u[i+1, j])
+            v_c = v[i, j]
+
+            dvdx = (v[i, j] - v[i-1, j]) / dx
+            dvdy = (v[i, j] - v[i, j-1]) / dy
+
+            lapv = (
+                (v[i+1, j] - 2*v[i, j] + v[i-1, j]) / dx**2 +
+                (v[i, j+1] - 2*v[i, j] + v[i, j-1]) / dy**2
+            )
+
+            v_star[i, j] = v[i, j] + dt * (
+                -u_c * dvdx - v_c * dvdy + nu * lapv
+            )
+
+    return u_star, v_star
+
+def pressure_poisson(Nx, Ny, dx, dy, p_iters, p, solid):
+    rhs = np.zeros_like(p)
+    for i in range(Nx):
+        for j in range(Ny):
+            rhs[i, j] = (
+                (u_star[i+1, j] - u_star[i, j]) / dx +
+                (v_star[i, j+1] - v_star[i, j]) / dy
+            ) / dt
+
+    for _ in range(p_iters):
+        p_new = p.copy()
+        for i in range(1, Nx-1):
+            for j in range(1, Ny-1):
+                if solid[i, j]:
+                    continue
+
+                p_e = p[i+1, j] if not solid[i+1, j] else p[i, j]
+                p_w = p[i-1, j] if not solid[i-1, j] else p[i, j]
+                p_n = p[i, j+1] if not solid[i, j+1] else p[i, j]
+                p_s = p[i, j-1] if not solid[i, j-1] else p[i, j]
+
+                p_new[i, j] = 0.25 * (
+                    p_e + p_w + p_n + p_s - dx * dy * rhs[i, j]
+                )
+
+        p = p_new
+
+        # Dirichlet inlet/outlet
+        p[0, :]  = p_in
+        p[-1, :] = p_out
+
+        # Neumann top/bottom walls
+        p[:, 0]  = p[:, 1]
+        p[:, -1] = p[:, -2]
+
+    return p
+
+
 
 def write_vtr(fname, u, v, p):
     uc, vc = cell_center_velocity(u, v)
@@ -154,46 +228,7 @@ for step in range(nsteps):
     # --------------------------------------------------------
     # Predictor step (u*)
     # --------------------------------------------------------
-    u_star = u.copy()
-    v_star = v.copy()
-
-    # u-momentum
-    for i in range(1, Nx):
-        for j in range(1, Ny-1):
-            u_c = u[i, j]
-            v_c = 0.25 * (v[i-1, j] + v[i, j] +
-                          v[i-1, j+1] + v[i, j+1])
-
-            dudx = (u[i, j] - u[i-1, j]) / dx
-            dudy = (u[i, j] - u[i, j-1]) / dy
-
-            lapu = (
-                (u[i+1, j] - 2*u[i, j] + u[i-1, j]) / dx**2 +
-                (u[i, j+1] - 2*u[i, j] + u[i, j-1]) / dy**2
-            )
-
-            u_star[i, j] = u[i, j] + dt * (
-                -u_c * dudx - v_c * dudy + nu * lapu
-            )
-
-    # v-momentum
-    for i in range(1, Nx-1):
-        for j in range(1, Ny):
-            u_c = 0.25 * (u[i, j-1] + u[i+1, j-1] +
-                          u[i, j]   + u[i+1, j])
-            v_c = v[i, j]
-
-            dvdx = (v[i, j] - v[i-1, j]) / dx
-            dvdy = (v[i, j] - v[i, j-1]) / dy
-
-            lapv = (
-                (v[i+1, j] - 2*v[i, j] + v[i-1, j]) / dx**2 +
-                (v[i, j+1] - 2*v[i, j] + v[i, j-1]) / dy**2
-            )
-
-            v_star[i, j] = v[i, j] + dt * (
-                -u_c * dvdx - v_c * dvdy + nu * lapv
-            )
+    u_star, v_star = predictor(Nx, Ny, dx, dy, dt, nu, u, v)
 
     apply_velocity_bc(u_star, v_star)
     enforce_slip_obstacle(u_star, v_star, solid)
@@ -201,32 +236,7 @@ for step in range(nsteps):
     # --------------------------------------------------------
     # Pressure Poisson equation
     # --------------------------------------------------------
-    rhs = np.zeros_like(p)
-    for i in range(Nx):
-        for j in range(Ny):
-            rhs[i, j] = (
-                (u_star[i+1, j] - u_star[i, j]) / dx +
-                (v_star[i, j+1] - v_star[i, j]) / dy
-            ) / dt
-
-    for _ in range(p_iters):
-        p_new = p.copy()
-        for i in range(1, Nx-1):
-            for j in range(1, Ny-1):
-                if solid[i, j]:
-                    continue
-
-                p_e = p[i+1, j] if not solid[i+1, j] else p[i, j]
-                p_w = p[i-1, j] if not solid[i-1, j] else p[i, j]
-                p_n = p[i, j+1] if not solid[i, j+1] else p[i, j]
-                p_s = p[i, j-1] if not solid[i, j-1] else p[i, j]
-
-                p_new[i, j] = 0.25 * (
-                    p_e + p_w + p_n + p_s - dx * dy * rhs[i, j]
-                )
-
-        p = p_new
-        apply_pressure_bc(p)
+    p = pressure_poisson(Nx, Ny, dx, dy, p_iters, p, solid)
 
     # --------------------------------------------------------
     # Projection step
