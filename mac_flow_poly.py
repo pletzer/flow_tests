@@ -178,7 +178,16 @@ def pressure_poisson(Nx, Ny, dx, dy, p_iters, p, solid):
 
     return p
 
+def projection(Nx, Ny, dx, dy, dt, p):
+    for i in range(1, Nx):
+        for j in range(Ny):
+            u[i, j] = u_star[i, j] - dt * (p[i, j] - p[i-1, j]) / dx
 
+    for i in range(Nx):
+        for j in range(1, Ny):
+            v[i, j] = v_star[i, j] - dt * (p[i, j] - p[i, j-1]) / dy
+
+    return u, v
 
 def write_vtr(fname, u, v, p):
     uc, vc = cell_center_velocity(u, v)
@@ -241,13 +250,7 @@ for step in range(nsteps):
     # --------------------------------------------------------
     # Projection step
     # --------------------------------------------------------
-    for i in range(1, Nx):
-        for j in range(Ny):
-            u[i, j] = u_star[i, j] - dt * (p[i, j] - p[i-1, j]) / dx
-
-    for i in range(Nx):
-        for j in range(1, Ny):
-            v[i, j] = v_star[i, j] - dt * (p[i, j] - p[i, j-1]) / dy
+    u, v = projection(Nx, Ny, dx, dy, dt, p)
 
     apply_velocity_bc(u, v)
     enforce_slip_obstacle(u, v, solid)
