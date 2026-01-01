@@ -213,10 +213,10 @@ def check_edge_coverage(poly, cell_segments, dx, dy, tol=1e-12):
 def flux_poly_matrices(polygon, Nx, Ny, dx, dy):
     """
     Compute the sparse matrices to estimate the flux on the surface of a polygon
-    return umatrix, vmatrix
+    return Amatrix, Bmatrix, these have keys ((i0,j0), (i1,j1)) keys
     """
-    umatrix = {}
-    vmatrix = {}
+    Amatrix = {}
+    Bmatrix = {}
     # compute the intersections between the polygon and the grid
     # {(i,j): [(xsi0, eta0, xsi1, eta1), ...]}
     cell_segments = polygon_cell_segments_parametric(polygon, Nx, Ny, dx, dy)
@@ -233,34 +233,52 @@ def flux_poly_matrices(polygon, Nx, Ny, dx, dy):
             # use weights of Eq (10) in https://journals.ametsoc.org/view/journals/mwre/147/1/mwr-d-18-0146.1.xml
             dxsi, deta = xsi1 - xsi0, eta1 - eta0
             axsi, aeta = 0.5*(xsi0 + xsi1), 0.5*(eta0 + eta1)
+
             # x flux
-            umatrix[(i  ,j)] = umatrix.get((i  ,j), 0.0) + deta*(1. - axsi)
-            umatrix[(i+1,j)] = umatrix.get((i+1,j), 0.0) + deta*axsi
+            Amatrix[(i, j, i  , j)] = Amatrix.get((i, j, i  , j), 0.0) + deta*(1. - axsi)
+            Amatrix[(i, j, i+1, j)] = Amatrix.get((i, j, i+1, j), 0.0) + deta*axsi
+
             # y flux
-            vmatrix[(i,j  )] = vmatrix.get((i,j  ), 0.0) + dxsi*(1. - aeta)
-            vmatrix[(i,j+1)] = vmatrix.get((i,j+1), 0.0) + dxsi*aeta
+            Bmatrix[(i, j, i, j  )] = Bmatrix.get((i, j, i, j  ), 0.0) + dxsi*(1. - aeta)
+            Bmatrix[(i, j, i, j+1)] = Bmatrix.get((i, j, i, j+1), 0.0) + dxsi*aeta
 
-    return umatrix, vmatrix
+    return Amatrix, Bmatrix
 
 
-def flux(umatrix, vmatrix, u, v, dx, dy):
+def flux_in_cell(Amatrix, Bmatrix, u, v, dx, dy):
     """
-    Compute the total flux across a polygon for a uniform grid
-    umatrix, vmatrix matrices returned by flux_poly_matrices
-    u, v Arakawa staggered velocity field in x and y directions. u has dimensions (Nx+1, Ny) and v has dimensions (Nx, Ny+1)
-    returns the total flux
+    Compute the flux across the obstacle for each intersected cell
+    Amatrix, Bmatrix are matrices returned by flux_poly_matrices
     """
     # turn the velocities into face fluxes
     uflux = u*dy
     vflux = v*dx
-    # sparse matrix multiplication
+
+    flux_per_cell = {}
+
+    for (ic, jc, iu, ju), weight in Amatrix.items():
+        flux_per_cell[(ic, jc)] = flux_per_cell.get((ic, jc), 0.0) + weight*uflux[iu, ju]
+    
+    for (ic, jc, iv, jv), weight in Bmatrix.items():
+        flux_per_cell[(ic, jc)] = flux_per_cell.get((ic, jc), 0.0) + weight*vflux[iv, jv]
+
+    return flux_per_cell
+
+
+def total_flux(Amatrix, Bmatrix, u, v, dx, dy):
+    """
+    Compute the total flux across a polygon for a uniform grid
+    umatrix, vmatrix matrices returned by flux_poly_matrices
+    u, v Arakawa staggered velocity field in x and y directions. u has dimensions (Nx+1, Ny) and v has dimensions (Nx, Ny+1)
+    returns the total flux across the obstacle
+    """
+    flux_per_cell = flux_in_cell(Amatrix, Bmatrix, u, v, dx, dy)
+
+    # sum the contributions from each cell
     tot_flux = 0.0
-    for cell in umatrix:
-        i, j = cell
-        tot_flux += umatrix[cell]*uflux[i, j]
-    for cell in vmatrix:
-        i, j = cell
-        tot_flux += vmatrix[cell]*vflux[i, j]
+    for (i, j), flx in flux_per_cell.items():
+        tot_flux += flx
+
     return tot_flux
 
 def is_inside_polygon(poly, point):
@@ -315,8 +333,8 @@ def test1():
     umatrix, vmatrix = flux_poly_matrices(polygon, Nx, Ny, dx, dy)
     u = np.ones((Nx+1, Ny), float)
     v = np.zeros((Nx, Ny+1), float)
-    total_flux = flux(umatrix, vmatrix, u, v, dx, dy)
-    print(f'total_flux = {total_flux}')
+    tot_flux = total_flux(umatrix, vmatrix, u, v, dx, dy)
+    print(f'tot_flux = {tot_flux}')
     
 def test2():
     Lx, Ly = 2.0, 1.0
@@ -330,8 +348,9 @@ def test2():
     umatrix, vmatrix = flux_poly_matrices(polygon, Nx, Ny, dx, dy)
     u = np.ones((Nx+1, Ny), float)
     v = np.zeros((Nx, Ny+1), float)
-    total_flux = flux(umatrix, vmatrix, u, v, dx, dy)
-    print(f'total_flux = {total_flux}')
+    tot_flux = total_flux(umatrix, vmatrix, u, v, dx, dy)
+    print(f'tot_flux = {tot_flux}')
  
 if __name__ == '__main__':
+    test1()
     test2()

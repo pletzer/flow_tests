@@ -2,12 +2,12 @@ import numpy as np
 import vtk
 from vtk.util import numpy_support
 from numba import njit, prange
-from poly_grid import is_inside_polygon
+from poly_grid import is_inside_polygon, flux_poly_matrices, flux
 
 # ============================================================
 # Parameters
 # ============================================================
-Nx, Ny = 100, 50 #40, 20
+Nx, Ny = 20, 10 # 100, 50 #40, 20
 Lx, Ly = 2.0, 1.0
 dx, dy = Lx / Nx, Ly / Ny
 
@@ -17,9 +17,11 @@ nu = 0.01
 p_in  = 1.0     # inlet pressure
 p_out = 0.0     # outlet pressure
 
-nsteps  = 1001
+nsteps  = 100 #1001
 p_iters = 80
 vtk_stride = 100
+
+nudge_factor_interface = 10.0
 
 # ============================================================
 # Staggered fields (MAC grid)
@@ -41,12 +43,7 @@ for j in range(Ny):
         if is_inside_polygon(poly, xy):
             solid[i, j] = True
 
-# # i0, i1 = int(0.8 / dx), int(1.0 / dx)
-# # j0, j1 = int(0.0 / dy), int(0.4 / dy)
-# i0, i1 = int(0.3*Lx/dx), int(0.5*Lx/dx)
-# j0, j1 = int(0.0*Ly/dy), int(0.6*Ly/dy)
-# # the obstacle is aligned to the cells
-# solid[i0:i1, j0:j1] = True
+u_interface_matrix, v_interface_matrix = flux_poly_matrices(poly, Nx, Ny, dx, dy)
 
 # ============================================================
 # Utility functions
@@ -67,7 +64,26 @@ def apply_velocity_bc(u, v):
 
     # Inlet/outlet: velocity is free (pressure-driven)
 
+
+def nudge_zero_interface_flux(Amatrix, Bmatrix, u, v, dt, nudge_factor_interface):
+
+    uin = u.copy()
+    vin = v.copy()
+
+    print(f'uin # of Nans = {np.count_nonzero(np.isnan(uin))}')
+    print(f'vin # of Nans = {np.count_nonzero(np.isnan(vin))}')
+
+    for cell in Amatrix:
+        i, j = cell
+        u[i, j] -= nudge_factor_interface * dt * Amatrix[cell] * uin[i, j]
+
+    for cell in Bmatrix:
+        i, j = cell
+        v[i, j] -= nudge_factor_interface * dt * Bmatrix[cell] * vin[i, j]
+
+
 def enforce_slip_obstacle(u, v, solid):
+
     Nx, Ny = solid.shape
 
     # --------------------------------
@@ -245,8 +261,11 @@ def write_vtr(fname, u, v, p):
 # ============================================================
 for step in range(nsteps):
 
+    print(f'starting step {step}')
+
     apply_velocity_bc(u, v)
-    enforce_slip_obstacle(u, v, solid)
+    #enforce_slip_obstacle(u, v, solid)
+    nudge_zero_interface_flux(u_interface_matrix, v_interface_matrix, u, v, dt, nudge_factor_interface)
 
     # --------------------------------------------------------
     # Predictor step (u*)
@@ -254,7 +273,8 @@ for step in range(nsteps):
     u_star, v_star = predictor(Nx, Ny, dx, dy, dt, nu, u, v)
 
     apply_velocity_bc(u_star, v_star)
-    enforce_slip_obstacle(u_star, v_star, solid)
+    #enforce_slip_obstacle(u_star, v_star, solid)
+    #nudge_zero_interface_flux(u_interface_matrix, v_interface_matrix, u_star, v_star, dt, nudge_factor_interface)
 
     # --------------------------------------------------------
     # Pressure Poisson equation
@@ -267,7 +287,8 @@ for step in range(nsteps):
     u, v = projection(Nx, Ny, dx, dy, dt, p, u_star, v_star, u, v)
 
     apply_velocity_bc(u, v)
-    enforce_slip_obstacle(u, v, solid)
+    #enforce_slip_obstacle(u, v, solid)
+    #nudge_zero_interface_flux(u_interface_matrix, v_interface_matrix, u, v, dt, nudge_factor_interface)
 
     # --------------------------------------------------------
     # Output
