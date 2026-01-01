@@ -313,11 +313,25 @@ def test1():
     print(check_polygon_coverage_length(polygon, cell_segments, dx, dy))
     print(check_edge_coverage(polygon, cell_segments, dx, dy))
     umatrix, vmatrix = flux_poly_matrices(polygon, Nx, Ny, dx, dy)
-    rng = np.random.default_rng(seed=42)
-    u = rng.random((Nx+1, Ny))
-    v = rng.random((Nx, Ny+1))
+    u = np.ones((Nx+1, Ny), float)
+    v = np.zeros((Nx, Ny+1), float)
     total_flux = flux(umatrix, vmatrix, u, v, dx, dy)
     print(f'total_flux = {total_flux}')
-
+    
+def test2():
+    Lx, Ly = 2.0, 1.0
+    Nx, Ny = 20, 10
+    dx, dy = Lx/Nx, Ly/Ny
+    polygon = poly = [(0.3*Lx, 0.0*Ly), (0.5*Lx, 0.0*Ly), (0.5*Lx, 0.6*Ly), (0.3*Lx, 0.6*Ly)]
+    cell_segments = polygon_cell_segments_parametric(polygon, Nx, Ny, dx, dy)
+    print(cell_segments)
+    print(check_polygon_coverage_length(polygon, cell_segments, dx, dy))
+    print(check_edge_coverage(polygon, cell_segments, dx, dy))
+    umatrix, vmatrix = flux_poly_matrices(polygon, Nx, Ny, dx, dy)
+    u = np.ones((Nx+1, Ny), float)
+    v = np.zeros((Nx, Ny+1), float)
+    total_flux = flux(umatrix, vmatrix, u, v, dx, dy)
+    print(f'total_flux = {total_flux}')
+ 
 if __name__ == '__main__':
-    test1()
+    test2()
