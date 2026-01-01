@@ -1,6 +1,7 @@
 import numpy as np
 import vtk
 from vtk.util import numpy_support
+from numba import njit, prange
 
 # ============================================================
 # Parameters
@@ -96,7 +97,7 @@ def enforce_slip_obstacle(u, v, solid):
             elif bottom_solid and top_solid:
                 v[i, j] = 0.0
 
-
+@njit
 def predictor(Nx, Ny, dx, dy, dt, nu, u, v):
     u_star = u.copy()
     v_star = v.copy()
@@ -141,7 +142,8 @@ def predictor(Nx, Ny, dx, dy, dt, nu, u, v):
 
     return u_star, v_star
 
-def pressure_poisson(Nx, Ny, dx, dy, p_iters, p, solid):
+@njit
+def pressure_poisson(Nx, Ny, dx, dy, dt, p_iters, p_in, p_out, u_star, v_star, p, solid):
     rhs = np.zeros_like(p)
     for i in range(Nx):
         for j in range(Ny):
@@ -151,9 +153,12 @@ def pressure_poisson(Nx, Ny, dx, dy, p_iters, p, solid):
             ) / dt
 
     for _ in range(p_iters):
+
         p_new = p.copy()
+
         for i in range(1, Nx-1):
             for j in range(1, Ny-1):
+
                 if solid[i, j]:
                     continue
 
@@ -178,7 +183,8 @@ def pressure_poisson(Nx, Ny, dx, dy, p_iters, p, solid):
 
     return p
 
-def projection(Nx, Ny, dx, dy, dt, p):
+@njit
+def projection(Nx, Ny, dx, dy, dt, p, u_star, v_star, u, v):
     for i in range(1, Nx):
         for j in range(Ny):
             u[i, j] = u_star[i, j] - dt * (p[i, j] - p[i-1, j]) / dx
@@ -186,7 +192,6 @@ def projection(Nx, Ny, dx, dy, dt, p):
     for i in range(Nx):
         for j in range(1, Ny):
             v[i, j] = v_star[i, j] - dt * (p[i, j] - p[i, j-1]) / dy
-
     return u, v
 
 def write_vtr(fname, u, v, p):
@@ -245,12 +250,12 @@ for step in range(nsteps):
     # --------------------------------------------------------
     # Pressure Poisson equation
     # --------------------------------------------------------
-    p = pressure_poisson(Nx, Ny, dx, dy, p_iters, p, solid)
+    p = pressure_poisson(Nx, Ny, dx, dy, dt, p_iters, p_in, p_out, u_star, v_star, p, solid)
 
     # --------------------------------------------------------
     # Projection step
     # --------------------------------------------------------
-    u, v = projection(Nx, Ny, dx, dy, dt, p)
+    u, v = projection(Nx, Ny, dx, dy, dt, p, u_star, v_star, u, v)
 
     apply_velocity_bc(u, v)
     enforce_slip_obstacle(u, v, solid)
