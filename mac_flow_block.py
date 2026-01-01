@@ -246,5 +246,7 @@ for step in range(nsteps):
     # Output
     # --------------------------------------------------------
     if step % vtk_stride == 0:
-        write_vtr(f"channelslip_{step:05d}.vtr", u, v, p)
-        print(f"Step {step}")
+        write_vtr(f"channel_block_{step:05d}.vtr", u, v, p)
+        chku = np.fabs(u).sum()
+        chkv = np.fabs(v).sum()
+        print(f"Done step {step} checksums: {chku} {chkv}")
