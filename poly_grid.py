@@ -170,10 +170,6 @@ def is_inside_polygon(poly, point):
 
     return inside
 
-# Example Usage:
-# square = [(0, 0), (10, 0), (10, 10), (0, 10)]
-# print(is_inside_polygon(square, (5, 5))) # Returns True
-
 # ------------------------------------------------------------
 
 class PolyGrid:
@@ -182,34 +178,74 @@ class PolyGrid:
     """
 
     def __init__(self, poly, Nx, Ny, dx, dy, debug=False):
-
-        self.poly = ensure_ccw(poly)
+        """
+        Constructor
+        Args:
+            poly: List of (x, y) tuples representing the polygon vertices.
+            Nx, Ny are the number of x and y cells
+            dx, dy is the grid space
+        """
 
         self.Nx, self.Ny = Nx, Ny
         self.dx, self.dy = dx, dy
 
-        # find the intersections of the polygon segments with the grid
-        self.cell_segments = polygon_cell_segments_parametric(self.poly, self.Nx, self.Ny, self.dx, self.dy, debug=debug)
+        # make sure the polygon vertices are in counterclockwise direction
+        self.poly = ensure_ccw(poly)
 
-        # compute the cell segment index map and its reverse
-        self.ij2k = {}
-        self.k2ij = {}
-        k = 0
-        for ij in self.cell_segments:
-            self.ij2k[ij] = k
-            self.k2ij[k] = ij
-            k += 1
+        # find the intersections of the polygon segments with the grid. cell_segments 
+        # associates a list of segments to each (i, j) cell, i.e {(i, j): [(xi0, eta0, xi1, eta1), ...]}
+        # where 0 <= xi, eta <= 1 are the start/end parametric coordinates of a sub-segment of the polygon. 
+        # Note that if the sub-segment falls onto a cell edge then the sub-segment may be associated to 
+        # one or the other cell.
+        self.cell_segments = polygon_cell_segments_parametric(self.poly, self.Nx, self.Ny, self.dx, self.dy, debug=debug)
 
         # compute the flux matrices A and B
         self.flux_poly_matrices()
 
+        # compute the map betwen a flat index and the sparse (i, j) indexing. This is required to construct the constraint 
+        # matrix M which uses a flat cell indexing 
 
-    def get_residuls(self, u, v):
+        # collect all the i,j (degrees of freedoms involved in the constraint)
+        ijs = set()
+        for ijij in list(self.A.keys()) + list(self.B.keys()):
+            ijs.add((ijij[0], ijij[1]))
+            ijs.add((ijij[2], ijij[3]))
+
+        self.k2ij = dict()
+        k = 0
+        for ij in ijs:
+            self.k2ij[k] = ij
+            k += 1
+    
+    def update_velocities(self, u, v):
+        """
+        Update the velocities to enforce the impermeability condition on the surface of the polygon
+        u = u - A^T lambda_
+        v = v - B^T lambda_
+        """
+        # compute the residuls
+        g = self.get_residuals(u, v)
+
+        # compute A A^T + B B^T
+        M = self.get_M()
+
+        # solve the (small) matrix system
+        lambda_ = np.linalg.solve(M, g)
+
+        # update the velocities
+        for k1, (i1, j1) in self.k2ij.items():
+            for k2, (i2, j2) in self.k2ij.items():
+                u[i1, j1] -= self.A.get((i2, j2, i1, j1), 0.0) * lambda_[k2]
+                v[i1, j1] -= self.B.get((i2, j2, i1, j1), 0.0) * lambda_[k2]
+
+
+
+    def get_residuals(self, u, v):
         """
         Compute the residul vector g = A.u + B.v
         """
         # number of intersected cells
-        Nc = len(self.ij2k)
+        Nc = len(self.k2ij)
         g = np.zeros((Nc,), float)
         for k1, (i1, j1) in self.k2ij.items():
             for k2, (i2, j2) in self.k2ij.items():
@@ -223,7 +259,7 @@ class PolyGrid:
         Compute the matrix A A^T + B B^T in flat index space (k)
         """
         # number of intersected cells
-        Nc = len(self.ij2k)
+        Nc = len(self.k2ij)
         M = np.zeros((Nc, Nc), float)
         for k1, (i1, j1) in self.k2ij.items():
             for k2, (i2, j2) in self.k2ij.items():
