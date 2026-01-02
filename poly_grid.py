@@ -1,7 +1,6 @@
 import numpy as np
 from collections import defaultdict
 
-
 # ------------------------------------------------------------
 # Utilities
 # ------------------------------------------------------------
@@ -15,6 +14,23 @@ def ensure_ccw(poly):
     if area < 0:
         poly = poly[::-1]
     return poly
+
+def polygon_edge_lengths(polygon):
+    polygon = np.asarray(polygon)
+    lengths = []
+    for k in range(len(polygon)):
+        p0 = polygon[k]
+        p1 = polygon[(k+1) % len(polygon)]
+        lengths.append(np.linalg.norm(p1 - p0))
+    return np.array(lengths)
+
+def clipped_segment_length(i, j, seg, dx, dy):
+    xi0, eta0, xi1, eta1 = seg
+    x0 = (i + xi0) * dx
+    y0 = (j + eta0) * dy
+    x1 = (i + xi1) * dx
+    y1 = (j + eta1) * dy
+    return np.hypot(x1 - x0, y1 - y0)
 
 
 def clip_segment_to_box(p0, p1, xmin, xmax, ymin, ymax):
@@ -57,23 +73,6 @@ def clip_segment_to_box(p0, p1, xmin, xmax, ymin, ymax):
     q0 = np.array([x0 + t0*dx, y0 + t0*dy])
     q1 = np.array([x0 + t1*dx, y0 + t1*dy])
     return q0, q1
-
-def polygon_edge_lengths(polygon):
-    polygon = np.asarray(polygon)
-    lengths = []
-    for k in range(len(polygon)):
-        p0 = polygon[k]
-        p1 = polygon[(k+1) % len(polygon)]
-        lengths.append(np.linalg.norm(p1 - p0))
-    return np.array(lengths)
-
-def clipped_segment_length(i, j, seg, dx, dy):
-    xi0, eta0, xi1, eta1 = seg
-    x0 = (i + xi0) * dx
-    y0 = (j + eta0) * dy
-    x1 = (i + xi1) * dx
-    y1 = (j + eta1) * dy
-    return np.hypot(x1 - x0, y1 - y0)
 
 def polygon_cell_segments_parametric(
     polygon, Nx, Ny, dx, dy, debug=False
@@ -134,153 +133,6 @@ def polygon_cell_segments_parametric(
 
     return dict(segments)
 
-
-def check_polygon_coverage_length(polygon, cell_segments, dx, dy, tol=1e-10):
-    poly = ensure_ccw(np.asarray(polygon))
-
-    # original length
-    L_poly = polygon_edge_lengths(poly).sum()
-
-    # reconstructed length
-    L_clip = 0.0
-    for (i, j), segs in cell_segments.items():
-        for seg in segs:
-            L_clip += clipped_segment_length(i, j, seg, dx, dy)
-
-    rel_err = abs(L_clip - L_poly) / max(L_poly, 1e-14)
-
-    return {
-        "L_polygon": L_poly,
-        "L_clipped": L_clip,
-        "relative_error": rel_err,
-        "ok": rel_err < tol
-    }
-
-def check_edge_coverage(poly, cell_segments, dx, dy, tol=1e-12):
-    poly = ensure_ccw(np.asarray(poly))
-    ok = True
-    reports = []
-
-    for k in range(len(poly)):
-        p0 = poly[k]
-        p1 = poly[(k+1) % len(poly)]
-        edge_vec = p1 - p0
-        L = np.linalg.norm(edge_vec)
-        if L < tol:
-            continue
-
-        intervals = []
-
-        for (i, j), segs in cell_segments.items():
-            for seg in segs:
-                # reconstruct physical points
-                xi0, eta0, xi1, eta1 = seg
-                q0 = np.array([(i + xi0)*dx, (j + eta0)*dy])
-                q1 = np.array([(i + xi1)*dx, (j + eta1)*dy])
-
-                # check colinearity
-                v0 = q0 - p0
-                v1 = q1 - p0
-                cross = abs(np.cross(edge_vec, v0)) / L
-                if cross > 1e-10:
-                    continue
-
-                s0 = np.dot(v0, edge_vec) / (L*L)
-                s1 = np.dot(v1, edge_vec) / (L*L)
-                intervals.append((min(s0,s1), max(s0,s1)))
-
-        if not intervals:
-            ok = False
-            reports.append((k, "no coverage"))
-            continue
-
-        intervals.sort()
-        s = 0.0
-        for a, b in intervals:
-            if a > s + tol:
-                ok = False
-                reports.append((k, f"gap at s={s:.3e}"))
-                break
-            s = max(s, b)
-
-        if s < 1.0 - tol:
-            ok = False
-            reports.append((k, f"ends at s={s:.3e}"))
-
-    return ok, reports
-
-
-def flux_poly_matrices(polygon, Nx, Ny, dx, dy):
-    """
-    Compute the sparse matrices to estimate the flux on the surface of a polygon
-    return Amatrix, Bmatrix, these have keys ((i0,j0), (i1,j1)) keys
-    """
-    Amatrix = {}
-    Bmatrix = {}
-    # compute the intersections between the polygon and the grid
-    # {(i,j): [(xsi0, eta0, xsi1, eta1), ...]}
-    cell_segments = polygon_cell_segments_parametric(polygon, Nx, Ny, dx, dy)
-
-    # iterate over all the intersected cells
-    for cell, segments in cell_segments.items():
-        # cell indices
-        i, j = cell
-        # iterate over the segments in the cell
-        for seg in segments:
-            # get the start/end parametric coordinates of the subsegment
-            xsi0, eta0, xsi1, eta1 = seg
-
-            # use weights of Eq (10) in https://journals.ametsoc.org/view/journals/mwre/147/1/mwr-d-18-0146.1.xml
-            dxsi, deta = xsi1 - xsi0, eta1 - eta0
-            axsi, aeta = 0.5*(xsi0 + xsi1), 0.5*(eta0 + eta1)
-
-            # x flux
-            Amatrix[(i, j, i  , j)] = Amatrix.get((i, j, i  , j), 0.0) + deta*(1. - axsi)
-            Amatrix[(i, j, i+1, j)] = Amatrix.get((i, j, i+1, j), 0.0) + deta*axsi
-
-            # y flux
-            Bmatrix[(i, j, i, j  )] = Bmatrix.get((i, j, i, j  ), 0.0) + dxsi*(1. - aeta)
-            Bmatrix[(i, j, i, j+1)] = Bmatrix.get((i, j, i, j+1), 0.0) + dxsi*aeta
-
-    return Amatrix, Bmatrix
-
-
-def flux_in_cell(Amatrix, Bmatrix, u, v, dx, dy):
-    """
-    Compute the flux across the obstacle for each intersected cell
-    Amatrix, Bmatrix are matrices returned by flux_poly_matrices
-    """
-    # turn the velocities into face fluxes
-    uflux = u*dy
-    vflux = v*dx
-
-    flux_per_cell = {}
-
-    for (ic, jc, iu, ju), weight in Amatrix.items():
-        flux_per_cell[(ic, jc)] = flux_per_cell.get((ic, jc), 0.0) + weight*uflux[iu, ju]
-    
-    for (ic, jc, iv, jv), weight in Bmatrix.items():
-        flux_per_cell[(ic, jc)] = flux_per_cell.get((ic, jc), 0.0) + weight*vflux[iv, jv]
-
-    return flux_per_cell
-
-
-def total_flux(Amatrix, Bmatrix, u, v, dx, dy):
-    """
-    Compute the total flux across a polygon for a uniform grid
-    umatrix, vmatrix matrices returned by flux_poly_matrices
-    u, v Arakawa staggered velocity field in x and y directions. u has dimensions (Nx+1, Ny) and v has dimensions (Nx, Ny+1)
-    returns the total flux across the obstacle
-    """
-    flux_per_cell = flux_in_cell(Amatrix, Bmatrix, u, v, dx, dy)
-
-    # sum the contributions from each cell
-    tot_flux = 0.0
-    for (i, j), flx in flux_per_cell.items():
-        tot_flux += flx
-
-    return tot_flux
-
 def is_inside_polygon(poly, point):
     """
     Determines if a point is inside a polygon using Ray Casting.
@@ -291,6 +143,8 @@ def is_inside_polygon(poly, point):
     Returns:
         bool: True if inside, False otherwise.
     """
+    poly = ensure_ccw(np.asarray(poly))
+
     n = len(poly)
     inside = False
     x, y = point
@@ -320,20 +174,212 @@ def is_inside_polygon(poly, point):
 # square = [(0, 0), (10, 0), (10, 10), (0, 10)]
 # print(is_inside_polygon(square, (5, 5))) # Returns True
 
+# ------------------------------------------------------------
+
+class PolyGrid:
+    """
+    A class to compute the intersection of a polygon with a 2D rectilinear grid
+    """
+
+    def __init__(self, poly, Nx, Ny, dx, dy, debug=False):
+
+        self.poly = ensure_ccw(poly)
+
+        self.Nx, self.Ny = Nx, Ny
+        self.dx, self.dy = dx, dy
+
+        # find the intersections of the polygon segments with the grid
+        self.cell_segments = polygon_cell_segments_parametric(self.poly, self.Nx, self.Ny, self.dx, self.dy, debug=debug)
+
+        # compute the cell segment index map and its reverse
+        self.ij2k = {}
+        self.k2ij = {}
+        k = 0
+        for ij in self.cell_segments:
+            self.ij2k[ij] = k
+            self.k2ij[k] = ij
+            k += 1
+
+        # compute the flux matrices A and B
+        self.flux_poly_matrices()
+
+
+    def get_residuls(self, u, v):
+        """
+        Compute the residul vector g = A.u + B.v
+        """
+        # number of intersected cells
+        Nc = len(self.ij2k)
+        g = np.zeros((Nc,), float)
+        for k1, (i1, j1) in self.k2ij.items():
+            for k2, (i2, j2) in self.k2ij.items():
+                g[k1] += self.A.get((i1, j1, i2, j2), 0.0) * u[i2, j2] \
+                       + self.B.get((i1, j1, i2, j2), 0.0) * v[i2, j2]
+        return g
+
+
+    def get_M(self):
+        """
+        Compute the matrix A A^T + B B^T in flat index space (k)
+        """
+        # number of intersected cells
+        Nc = len(self.ij2k)
+        M = np.zeros((Nc, Nc), float)
+        for k1, (i1, j1) in self.k2ij.items():
+            for k2, (i2, j2) in self.k2ij.items():
+                for k3, (i3, j3) in self.k2ij.items():
+                    M[k1, k2] += self.A.get((i1, j1, i3, j3), 0.0) * self.A.get((i2, j2, i3, j3), 0.0) \
+                               + self.B.get((i1, j1, i3, j3), 0.0) * self.B.get((i2, j2, i3, j3), 0.0)
+        return M
+
+
+
+    def flux_poly_matrices(self):
+        """
+        Compute the sparse matrices to estimate the flux on the surface of a polygon
+        """
+        self.A = {}
+        self.B = {}
+        # iterate over all the intersected cells
+        for cell, segments in self.cell_segments.items():
+            # cell indices
+            i, j = cell
+            # iterate over the segments in the cell
+            for seg in segments:
+                # get the start/end parametric coordinates of the subsegment
+                xsi0, eta0, xsi1, eta1 = seg
+
+                # use weights of Eq (10) in https://journals.ametsoc.org/view/journals/mwre/147/1/mwr-d-18-0146.1.xml
+                dxsi, deta = xsi1 - xsi0, eta1 - eta0
+                axsi, aeta = 0.5*(xsi0 + xsi1), 0.5*(eta0 + eta1)
+
+                # x flux
+                self.A[(i, j, i  , j)] = self.A.get((i, j, i  , j), 0.0) + deta*(1. - axsi) * self.dy
+                self.A[(i, j, i+1, j)] = self.A.get((i, j, i+1, j), 0.0) + deta*axsi * self.dy
+
+                # y flux
+                self.B[(i, j, i, j  )] = self.B.get((i, j, i, j  ), 0.0) + dxsi*(1. - aeta) * self.dx
+                self.B[(i, j, i, j+1)] = self.B.get((i, j, i, j+1), 0.0) + dxsi*aeta * self.dx
+
+    def get_flux_in_cell(self, u, v):
+        """
+        Compute the flux across the obstacle for each intersected cell
+        u, v Arakawa C staggered velocity field in x and y directions. u has dimensions (Nx+1, Ny) and v has dimensions (Nx, Ny+1)
+        """
+
+        flux_per_cell = {}
+
+        for (ic, jc, iu, ju), weight in self.A.items():
+            flux_per_cell[(ic, jc)] = flux_per_cell.get((ic, jc), 0.0) + weight*u[iu, ju]
+        
+        for (ic, jc, iv, jv), weight in self.B.items():
+            flux_per_cell[(ic, jc)] = flux_per_cell.get((ic, jc), 0.0) + weight*v[iv, jv]
+
+        return flux_per_cell
+
+
+    def get_total_flux(self, u, v):
+        """
+        Compute the total flux across a polygon for a uniform grid
+        u, v Arakawa C staggered velocity field in x and y directions. u has dimensions (Nx+1, Ny) and v has dimensions (Nx, Ny+1)
+        returns the total flux across the obstacle
+        """
+        flux_per_cell = self.get_flux_in_cell(u, v)
+
+        # sum the contributions from each cell
+        tot_flux = 0.0
+        for (i, j), flx in flux_per_cell.items():
+            tot_flux += flx
+
+        return tot_flux
+
+
+    def check_polygon_coverage_length(self, tol=1e-10):
+
+        # original length
+        L_poly = polygon_edge_lengths(self.poly).sum()
+
+        # reconstructed length
+        L_clip = 0.0
+        for (i, j), segs in self.cell_segments.items():
+            for seg in segs:
+                L_clip += clipped_segment_length(i, j, seg, self.dx, self.dy)
+
+        rel_err = abs(L_clip - L_poly) / max(L_poly, 1e-14)
+
+        return {
+            "L_polygon": L_poly,
+            "L_clipped": L_clip,
+            "relative_error": rel_err,
+            "ok": rel_err < tol
+        }
+
+    def check_edge_coverage(self, tol=1e-12):
+        ok = True
+        reports = []
+
+        for k in range(len(self.poly)):
+            p0 = self.poly[k]
+            p1 = self.poly[(k+1) % len(self.poly)]
+            edge_vec = np.array(p1) - np.array(p0)
+            L = np.linalg.norm(edge_vec)
+            if L < tol:
+                continue
+
+            intervals = []
+
+            for (i, j), segs in self.cell_segments.items():
+                for seg in segs:
+                    # reconstruct physical points
+                    xi0, eta0, xi1, eta1 = seg
+                    q0 = np.array([(i + xi0)*self.dx, (j + eta0)*self.dy])
+                    q1 = np.array([(i + xi1)*self.dx, (j + eta1)*self.dy])
+
+                    # check colinearity
+                    v0 = q0 - p0
+                    v1 = q1 - p0
+                    cross = abs(np.cross(edge_vec, v0)) / L
+                    if cross > 1e-10:
+                        continue
+
+                    s0 = np.dot(v0, edge_vec) / (L*L)
+                    s1 = np.dot(v1, edge_vec) / (L*L)
+                    intervals.append((min(s0,s1), max(s0,s1)))
+
+            if not intervals:
+                ok = False
+                reports.append((k, "no coverage"))
+                continue
+
+            intervals.sort()
+            s = 0.0
+            for a, b in intervals:
+                if a > s + tol:
+                    ok = False
+                    reports.append((k, f"gap at s={s:.3e}"))
+                    break
+                s = max(s, b)
+
+            if s < 1.0 - tol:
+                ok = False
+                reports.append((k, f"ends at s={s:.3e}"))
+
+        return ok, reports
+
+
 #################################################################
 def test1():
     Lx, Ly = 20.0, 10.0
     Nx, Ny = 20, 10
     dx, dy = Lx/Nx, Ly/Ny
     polygon = [(0., 0.), (1.0, 0.), (1.0, 1.0)]
-    cell_segments = polygon_cell_segments_parametric(polygon, Nx, Ny, dx, dy)
-    print(cell_segments)
-    print(check_polygon_coverage_length(polygon, cell_segments, dx, dy))
-    print(check_edge_coverage(polygon, cell_segments, dx, dy))
-    umatrix, vmatrix = flux_poly_matrices(polygon, Nx, Ny, dx, dy)
+    pg = PolyGrid(poly=polygon, Nx=Nx, Ny=Ny, dx=dx, dy=dy, debug=True)
+    print(pg.cell_segments)
+    print(pg.check_polygon_coverage_length())
+    print(pg.check_edge_coverage())
     u = np.ones((Nx+1, Ny), float)
     v = np.zeros((Nx, Ny+1), float)
-    tot_flux = total_flux(umatrix, vmatrix, u, v, dx, dy)
+    tot_flux = pg.get_total_flux(u, v)
     print(f'tot_flux = {tot_flux}')
     
 def test2():
@@ -341,16 +387,15 @@ def test2():
     Nx, Ny = 20, 10
     dx, dy = Lx/Nx, Ly/Ny
     polygon = poly = [(0.3*Lx, 0.0*Ly), (0.5*Lx, 0.0*Ly), (0.5*Lx, 0.6*Ly), (0.3*Lx, 0.6*Ly)]
-    cell_segments = polygon_cell_segments_parametric(polygon, Nx, Ny, dx, dy)
-    print(cell_segments)
-    print(check_polygon_coverage_length(polygon, cell_segments, dx, dy))
-    print(check_edge_coverage(polygon, cell_segments, dx, dy))
-    umatrix, vmatrix = flux_poly_matrices(polygon, Nx, Ny, dx, dy)
+    pg = PolyGrid(poly=polygon, Nx=Nx, Ny=Ny, dx=dx, dy=dy, debug=True)
+    print(pg.cell_segments)
+    print(pg.check_polygon_coverage_length())
+    print(pg.check_edge_coverage())
     u = np.ones((Nx+1, Ny), float)
     v = np.zeros((Nx, Ny+1), float)
-    tot_flux = total_flux(umatrix, vmatrix, u, v, dx, dy)
+    tot_flux = pg.get_total_flux(u, v)
     print(f'tot_flux = {tot_flux}')
- 
+
 if __name__ == '__main__':
     test1()
     test2()
