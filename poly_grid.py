@@ -217,14 +217,15 @@ class PolyGrid:
             self.k2ij[k] = ij
             k += 1
     
-    def update_velocities(self, u, v):
+    def update_fluxes(self, uflux, vflux):
         """
-        Update the velocities to enforce the impermeability condition on the surface of the polygon
-        u = u - A^T lambda_
-        v = v - B^T lambda_
+        Update the fluxes (u.dx, v.dy) to enforce the impermeability condition on the surface of the polygon
+        u*dx = u*dx - A^T lambda_
+        v*dy = v*dy - B^T lambda_
         """
+
         # compute the residuls
-        g = self.get_residuals(u, v)
+        g = self.get_residuals(uflux, vflux)
 
         # compute A A^T + B B^T
         M = self.get_M()
@@ -235,12 +236,11 @@ class PolyGrid:
         # update the velocities
         for k1, (i1, j1) in self.k2ij.items():
             for k2, (i2, j2) in self.k2ij.items():
-                u[i1, j1] -= self.A.get((i2, j2, i1, j1), 0.0) * lambda_[k2]
-                v[i1, j1] -= self.B.get((i2, j2, i1, j1), 0.0) * lambda_[k2]
+                uflux[i1, j1] -= self.A.get((i2, j2, i1, j1), 0.0) * lambda_[k2]
+                vflux[i1, j1] -= self.B.get((i2, j2, i1, j1), 0.0) * lambda_[k2]
 
 
-
-    def get_residuals(self, u, v):
+    def get_flux_residuals(self, uflux, vflux):
         """
         Compute the residul vector g = A.u + B.v
         """
@@ -249,8 +249,8 @@ class PolyGrid:
         g = np.zeros((Nc,), float)
         for k1, (i1, j1) in self.k2ij.items():
             for k2, (i2, j2) in self.k2ij.items():
-                g[k1] += self.A.get((i1, j1, i2, j2), 0.0) * u[i2, j2] \
-                       + self.B.get((i1, j1, i2, j2), 0.0) * v[i2, j2]
+                g[k1] += self.A.get((i1, j1, i2, j2), 0.0) * uflux[i2, j2] \
+                       + self.B.get((i1, j1, i2, j2), 0.0) * vflux[i2, j2]
         return g
 
 
@@ -290,14 +290,14 @@ class PolyGrid:
                 axsi, aeta = 0.5*(xsi0 + xsi1), 0.5*(eta0 + eta1)
 
                 # x flux
-                self.A[(i, j, i  , j)] = self.A.get((i, j, i  , j), 0.0) + deta*(1. - axsi) * self.dy
-                self.A[(i, j, i+1, j)] = self.A.get((i, j, i+1, j), 0.0) + deta*axsi * self.dy
+                self.A[(i, j, i  , j)] = self.A.get((i, j, i  , j), 0.0) + deta*(1. - axsi)
+                self.A[(i, j, i+1, j)] = self.A.get((i, j, i+1, j), 0.0) + deta*axsi
 
                 # y flux
-                self.B[(i, j, i, j  )] = self.B.get((i, j, i, j  ), 0.0) + dxsi*(1. - aeta) * self.dx
-                self.B[(i, j, i, j+1)] = self.B.get((i, j, i, j+1), 0.0) + dxsi*aeta * self.dx
+                self.B[(i, j, i, j  )] = self.B.get((i, j, i, j  ), 0.0) + dxsi*(1. - aeta)
+                self.B[(i, j, i, j+1)] = self.B.get((i, j, i, j+1), 0.0) + dxsi*aeta
 
-    def get_flux_in_cell(self, u, v):
+    def get_flux_in_cell(self, uflux, vflux):
         """
         Compute the flux across the obstacle for each intersected cell
         u, v Arakawa C staggered velocity field in x and y directions. u has dimensions (Nx+1, Ny) and v has dimensions (Nx, Ny+1)
@@ -306,21 +306,21 @@ class PolyGrid:
         flux_per_cell = {}
 
         for (ic, jc, iu, ju), weight in self.A.items():
-            flux_per_cell[(ic, jc)] = flux_per_cell.get((ic, jc), 0.0) + weight*u[iu, ju]
+            flux_per_cell[(ic, jc)] = flux_per_cell.get((ic, jc), 0.0) + weight*uflux[iu, ju]
         
         for (ic, jc, iv, jv), weight in self.B.items():
-            flux_per_cell[(ic, jc)] = flux_per_cell.get((ic, jc), 0.0) + weight*v[iv, jv]
+            flux_per_cell[(ic, jc)] = flux_per_cell.get((ic, jc), 0.0) + weight*vflux[iv, jv]
 
         return flux_per_cell
 
 
-    def get_total_flux(self, u, v):
+    def get_total_flux(self, uflux, vflux):
         """
         Compute the total flux across a polygon for a uniform grid
         u, v Arakawa C staggered velocity field in x and y directions. u has dimensions (Nx+1, Ny) and v has dimensions (Nx, Ny+1)
         returns the total flux across the obstacle
         """
-        flux_per_cell = self.get_flux_in_cell(u, v)
+        flux_per_cell = self.get_flux_in_cell(uflux=uflux, vflux=vflux)
 
         # sum the contributions from each cell
         tot_flux = 0.0
@@ -415,7 +415,9 @@ def test1():
     print(pg.check_edge_coverage())
     u = np.ones((Nx+1, Ny), float)
     v = np.zeros((Nx, Ny+1), float)
-    tot_flux = pg.get_total_flux(u, v)
+    uflux = u * dy
+    vflux = v * dx
+    tot_flux = pg.get_total_flux(uflux=uflux, vflux=vflux)
     print(f'tot_flux = {tot_flux}')
     
 def test2():
@@ -429,7 +431,9 @@ def test2():
     print(pg.check_edge_coverage())
     u = np.ones((Nx+1, Ny), float)
     v = np.zeros((Nx, Ny+1), float)
-    tot_flux = pg.get_total_flux(u, v)
+    uflux = u * dy
+    vflux = v * dx
+    tot_flux = pg.get_total_flux(uflux=uflux, vflux=vflux)
     print(f'tot_flux = {tot_flux}')
 
 if __name__ == '__main__':
