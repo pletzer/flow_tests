@@ -213,7 +213,7 @@ class PolyGrid:
 
         self.k2ij = dict()
         k = 0
-        for ij in ijs:
+        for ij in sorted(ijs): # not really necessary to sort but helps with debugging
             self.k2ij[k] = ij
             k += 1
     
@@ -224,8 +224,8 @@ class PolyGrid:
         v*dy = v*dy - B^T lambda_
         """
 
-        # compute the residuls
-        g = self.get_residuals(uflux, vflux)
+        # compute the residuals
+        g = self.get_flux_residuals(uflux, vflux)
 
         # compute A A^T + B B^T
         M = self.get_M()
@@ -236,13 +236,14 @@ class PolyGrid:
         # update the velocities
         for k1, (i1, j1) in self.k2ij.items():
             for k2, (i2, j2) in self.k2ij.items():
+                # note: transpose of A and B
                 uflux[i1, j1] -= self.A.get((i2, j2, i1, j1), 0.0) * lambda_[k2]
                 vflux[i1, j1] -= self.B.get((i2, j2, i1, j1), 0.0) * lambda_[k2]
 
 
     def get_flux_residuals(self, uflux, vflux):
         """
-        Compute the residul vector g = A.u + B.v
+        Compute the residul vector g = A @ uflux + B @ vflux
         """
         # number of intersected cells
         Nc = len(self.k2ij)
