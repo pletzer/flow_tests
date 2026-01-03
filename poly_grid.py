@@ -1,6 +1,10 @@
 import numpy as np
 from collections import defaultdict
 
+"""
+Flux conserving impermeability enforcement based on mimetic interpolation
+"""
+
 # ------------------------------------------------------------
 # Utilities
 # ------------------------------------------------------------
@@ -212,9 +216,11 @@ class PolyGrid:
             ijs.add((ijij[2], ijij[3]))
 
         self.k2ij = dict()
+        self.ij2k = dict()
         k = 0
         for ij in sorted(ijs): # not really necessary to sort but helps with debugging
             self.k2ij[k] = ij
+            self.ij2k[ij] = k
             k += 1
     
     def update_fluxes(self, uflux, vflux):
@@ -231,14 +237,20 @@ class PolyGrid:
         M = self.get_M()
 
         # solve the (small) matrix system
-        lambda_ = np.linalg.solve(M, g)
+        eps = 1e-14 * np.trace(M)
+        lambda_ = np.linalg.solve(M + eps*np.eye(M.shape[0]), g) # guard against singular M
 
-        # update the velocities
-        for k1, (i1, j1) in self.k2ij.items():
-            for k2, (i2, j2) in self.k2ij.items():
-                # note: transpose of A and B
-                uflux[i1, j1] -= self.A.get((i2, j2, i1, j1), 0.0) * lambda_[k2]
-                vflux[i1, j1] -= self.B.get((i2, j2, i1, j1), 0.0) * lambda_[k2]
+        # update the fluxes
+
+        # uflux -= A^T @ lambda
+        for (ic, jc, iu, ju), a_elem in self.A.items():
+            kc = self.ij2k[(ic, jc)]
+            uflux[iu, ju] -= a_elem * lambda_[kc]
+
+        # vflux -= B^T @ lambda
+        for (ic, jc, iv, jv), b_elem in self.B.items():
+            kc = self.ij2k[(ic, jc)]
+            vflux[iv, jv] -= b_elem * lambda_[kc]
 
 
     def get_flux_residuals(self, uflux, vflux):
@@ -248,10 +260,12 @@ class PolyGrid:
         # number of intersected cells
         Nc = len(self.k2ij)
         g = np.zeros((Nc,), float)
-        for k1, (i1, j1) in self.k2ij.items():
-            for k2, (i2, j2) in self.k2ij.items():
-                g[k1] += self.A.get((i1, j1, i2, j2), 0.0) * uflux[i2, j2] \
-                       + self.B.get((i1, j1, i2, j2), 0.0) * vflux[i2, j2]
+        for (i1, j1, i2, j2), a_elem in self.A.items():
+            k1 = self.ij2k[(i1, j1)]
+            g[k1] += a_elem * uflux[i2, j2]
+        for (i1, j1, i2, j2), b_elem in self.B.items():
+            k1 = self.ij2k[(i1, j1)]
+            g[k1] += b_elem * vflux[i2, j2]
         return g
 
 
@@ -437,6 +451,30 @@ def test2():
     tot_flux = pg.get_total_flux(uflux=uflux, vflux=vflux)
     print(f'tot_flux = {tot_flux}')
 
+def test3():
+    Lx, Ly = 1.0, 1.0
+    Nx, Ny = 1, 1
+    dx, dy = Lx/Nx, Ly/Ny
+    polygon = [(0.5*dx, 1.2*dy), (0.5*dx, -0.2*dy), (1.1*dx, -0.2*dy)]
+    pg = PolyGrid(poly=polygon, Nx=Nx, Ny=Ny, dx=dx, dy=dy, debug=True)
+    u = np.zeros((Nx+1, Ny), float)
+    v = np.zeros((Nx, Ny+1), float)
+    uflux_in = u * dy
+    vflux_in = v * dx
+    vflux_in[0, 0] = 1.0 # lower face
+    vflux_in[0, 1] = 1.0 # upper face
+    uflux_out = uflux_in.copy()
+    vflux_out = vflux_in.copy()
+    pg.update_fluxes(uflux=uflux_out, vflux=vflux_out)
+    # since the polygon's segment runs parallel to the v flux and there is no uflux, 
+    # no update is expected
+    print(vflux_in[0, 0], vflux_out[0, 0])
+    assert vflux_in[0, 0] == vflux_out[0, 0]
+    assert vflux_in[0, 1] == vflux_out[0, 1]
+    assert uflux_in[0, 0] == uflux_out[0, 0]
+    assert uflux_in[1, 0] == uflux_out[1, 0]
+
 if __name__ == '__main__':
     test1()
     test2()
+    test3()
