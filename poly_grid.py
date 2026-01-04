@@ -437,11 +437,11 @@ class PolyGrid:
                     # dyfrac
                     if abs(xsi0 - side) < tol:
                         # xsi0 is 0 or 1
-                        dyfrac[i + side, j] = ate0*edis + eta0*side
+                        dyfrac[i + side, j] = ate0*side + eta0*edis
 
                     if abs(xsi1 - side) < tol:
                         # xsi1 is 0 or 1
-                        dyfrac[i + side, j] = ate1*side + eta1*edis
+                        dyfrac[i + side, j] = ate1*edis + eta1*side
 
         return dxfrac, dyfrac
 
