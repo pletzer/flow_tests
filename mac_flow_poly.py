@@ -32,7 +32,7 @@ p = np.zeros((Nx, Ny))       # pressure (cells)
 # ============================================================
 # Obstacle represented as a polygon
 # ============================================================
-poly = [(0.3*Lx, 0.0*Ly), (0.5*Lx, 0.0*Ly), (0.5*Lx, 0.60*Ly), (0.3*Lx, 0.60*Ly)]
+poly = [(0.3*Lx, 0.0*Ly), (0.5*Lx, 0.0*Ly), (0.5*Lx, 0.60*Ly), (0.31*Lx, 0.60*Ly)]
 
 # poly_grid computes the intersection of an polygon with a grid
 poly_grid = PolyGrid(poly, Nx=Nx, Ny=Ny, dx=dx, dy=dy, debug=False, closed=True)
