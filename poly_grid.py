@@ -99,7 +99,8 @@ def polygon_cell_segments_parametric(polygon, Nx, Ny, dx, dy, debug=False, close
     # number of segments
     nseg = len(polygon) - 1
 
-    print(f'+++ nseg = {nseg}')
+    if debug:
+        print(f'Number of segments = {nseg} closed = {closed}')
     
     for k in range(nseg):
         p0 = polygon[k]
@@ -151,7 +152,7 @@ def polygon_cell_segments_parametric(polygon, Nx, Ny, dx, dy, debug=False, close
                 seg = (xi0, eta0, xi1, eta1)
                 segments[(i, j)].append(seg)
                 if debug:
-                    print(f"+++ seg in cell {(i,j)}: {seg}")
+                    print(f"Found segment in cell {(i,j)}: {seg}")
 
     return dict(segments)
 
@@ -254,18 +255,12 @@ class PolyGrid:
         # compute the residuals
         g = self.get_flux_residuals(uflux, vflux)
 
-        print(f'*** g = {g}')
-
         # compute A A^T + B B^T
         M = self.get_M()
-
-        print(f'*** M = {M}')
 
         # solve the (small) matrix system
         eps = 1e-14 * np.trace(M)
         lambda_ = np.linalg.solve(M + eps*np.eye(M.shape[0]), g) # guard against singular M
-
-        print(f'*** lambda_ = {lambda_}')
 
         # update the fluxes
 
@@ -351,8 +346,6 @@ class PolyGrid:
 
             for seg in segments:
 
-                print(f'*** seg = {seg}')
-
                 xsi0, eta0, xsi1, eta1 = seg
                 dxsi, deta = xsi1 - xsi0, eta1 - eta0
                 axsi, aeta = 0.5*(xsi0 + xsi1), 0.5*(eta0 + eta1)
@@ -374,9 +367,6 @@ class PolyGrid:
                     if 0 <= j+1 <= self.Ny:
                         self.B[(i, j, i, j)] += dxsi * (1.0 - aeta)
                         self.B[(i, j, i, j+1)] += dxsi * aeta
-
-            print(f'*** self.A = {self.A}')
-            print(f'*** self.B = {self.B}')
 
 
     def get_flux_in_cell(self, uflux, vflux):
@@ -517,69 +507,6 @@ def test2():
     vflux = v * dx
     tot_flux = pg.get_total_flux(uflux=uflux, vflux=vflux)
     print(f'tot_flux = {tot_flux}')
-
-
-def test6():
-    Lx, Ly = 2.0, 2.0
-    Nx, Ny = 2, 2
-    dx, dy = Lx/Nx, Ly/Ny
-    polygon = [(0.5*dx, 1.01*dy), (1.5*dx, 1.01*dy), (1.5*dx, 1.5*dy), (0.5*dx, 1.5*dy)]
-    pg = PolyGrid(poly=polygon, Nx=Nx, Ny=Ny, dx=dx, dy=dy, debug=True)
-    uflux = np.zeros((Nx+1, Ny), float)
-    vflux = np.zeros((Nx, Ny+1), float)
-    uflux[0,1] = 1
-    uflux[1,1] = 1
-    uflux_out = uflux.copy()
-    vflux_out = vflux.copy()
-    pg.update_fluxes(uflux=uflux_out, vflux=vflux_out)
-    # since the polygon's segment runs parallel to the v flux and there is no uflux, 
-    # no update is expected
-    print('in:')
-    print(f'uflux = {uflux}')
-    print(f'vflux = {vflux}')
-    print('out:')
-    print(f'uflux = {uflux_out}')
-    print(f'vflux = {vflux_out}')
-
-    tol = 1.e-10
-    # assert abs(vflux_in[0, 0] - vflux_out[0, 0]) < tol
-    # assert abs(vflux_in[0, 1] - vflux_out[0, 1]) < tol
-    # assert abs(uflux_in[0, 0] - uflux_out[0, 0]) < tol
-    # assert abs(uflux_in[1, 0] - uflux_out[1, 0]) < tol
-
-
-def test5():
-    Lx, Ly = 3.0, 3.0
-    Nx, Ny = 3, 3
-    dx, dy = Lx/Nx, Ly/Ny
-    polygon = [(1.01*dx, 1.01*dy), (1.99*dx, 1.01*dy), (1.99*dx, 1.99*dy), (1.01*dx, 1.99*dy)]
-    pg = PolyGrid(poly=polygon, Nx=Nx, Ny=Ny, dx=dx, dy=dy, debug=True)
-    u = np.zeros((Nx+1, Ny), float)
-    v = np.zeros((Nx, Ny+1), float)
-    u[1,1] = 1
-    v[1,1] = 2
-    u[2,1] = 3
-    v[1,2] = 4
-    uflux_in = u * dy
-    vflux_in = v * dx
-    uflux_out = uflux_in.copy()
-    vflux_out = vflux_in.copy()
-    pg.update_fluxes(uflux=uflux_out, vflux=vflux_out)
-    # since the polygon's segment runs parallel to the v flux and there is no uflux, 
-    # no update is expected
-    print('in:')
-    print(f'uflux[1,1] = {uflux_in[1,1]} uflux[2,1] = {uflux_in[2,1]}')
-    print(f'vflux[1,1] = {vflux_in[1,1]} vflux[1,2] = {vflux_in[1,2]}')
-    print('out:')
-    print(f'uflux[1,1] = {uflux_out[1,1]} uflux[2,1] = {uflux_out[2,1]}')
-    print(f'vflux[1,1] = {vflux_out[1,1]} vflux[1,2] = {vflux_out[1,2]}')
-
-    tol = 1.e-10
-    # assert abs(vflux_in[0, 0] - vflux_out[0, 0]) < tol
-    # assert abs(vflux_in[0, 1] - vflux_out[0, 1]) < tol
-    # assert abs(uflux_in[0, 0] - uflux_out[0, 0]) < tol
-    # assert abs(uflux_in[1, 0] - uflux_out[1, 0]) < tol
-
 
 def test4():
     Lx, Ly = 1.0, 1.0
