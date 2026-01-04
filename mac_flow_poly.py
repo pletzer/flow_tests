@@ -74,10 +74,17 @@ def enforce_slip_obstacle(u, v, dx, dy, poly_grid):
 
     poly_grid.update_fluxes(uflux=uflux, vflux=vflux)
 
-    # back to velocity
     tol = 1.e-8 # need to avoid leakeage
-    u = np.where(poly_grid.dyfrac * dy > tol, uflux / (poly_grid.dyfrac * dy), 0.0)
-    v = np.where(poly_grid.dxfrac * dx > tol, vflux / (poly_grid.dxfrac * dx), 0.0)
+
+    denom = poly_grid.dyfrac * dy
+    valid_mask = denom > tol
+    u *= 0
+    u[valid_mask] = uflux[valid_mask] / denom[valid_mask]
+
+    denom = poly_grid.dxfrac * dx
+    valid_mask = denom > tol
+    v *= 0
+    v[valid_mask] = vflux[valid_mask] / denom[valid_mask]
 
     return u, v
 
