@@ -78,64 +78,78 @@ def clip_segment_to_box(p0, p1, xmin, xmax, ymin, ymax):
     q1 = np.array([x0 + t1*dx, y0 + t1*dy])
     return q0, q1
 
-def polygon_cell_segments_parametric(
-    polygon, Nx, Ny, dx, dy, debug=False
-):
+def polygon_cell_segments_parametric(polygon, Nx, Ny, dx, dy, debug=False, closed=True):
     """
+    Compute the parametric segments of a polygon within each grid cell.
+
     Returns:
-        dict[(i,j)] = [(xi0,eta0,xi1,eta1), ...]
+        dict[(i,j)] = [(xi0, eta0, xi1, eta1), ...]
+    where xi, eta are parametric coordinates in [0,1] for the subsegment in the cell.
     """
-    GEOM_TOL = 1e-10 * min(dx, dy)
+    GEOM_TOL = 1e-14 * min(dx, dy)  # minimal length to keep segment
+    EPS = 1e-12                       # numerical tolerance
 
     polygon = ensure_ccw(np.asarray(polygon))
     segments = defaultdict(list)
 
-    for k in range(len(polygon)):
+    n = len(polygon) - 1
+    if closed:
+        n = len(polygon)
+    
+    for k in range(n):
         p0 = polygon[k]
-        p1 = polygon[(k+1) % len(polygon)]
+        p1 = polygon[(k + 1) % n]
 
-        # bounding box in index space
-        xmin = min(p0[0], p1[0])
-        xmax = max(p0[0], p1[0])
-        ymin = min(p0[1], p1[1])
-        ymax = max(p0[1], p1[1])
+        # Bounding box in index space
+        xmin, xmax = min(p0[0], p1[0]), max(p0[0], p1[0])
+        ymin, ymax = min(p0[1], p1[1]), max(p0[1], p1[1])
 
+        # Determine which cells this segment can intersect
         i0 = max(0, int(np.floor(xmin / dx)))
-        i1 = min(Nx-1, int(np.floor(xmax / dx)))
+        i1 = min(Nx - 1, int(np.floor(xmax / dx)))
         j0 = max(0, int(np.floor(ymin / dy)))
-        j1 = min(Ny-1, int(np.floor(ymax / dy)))
+        j1 = min(Ny - 1, int(np.floor(ymax / dy)))
 
-        for i in range(i0, i1+1):
-            for j in range(j0, j1+1):
+        for i in range(i0, i1 + 1):
+            for j in range(j0, j1 + 1):
+                # Cell boundaries
+                cx0, cx1 = i * dx, (i + 1) * dx
+                cy0, cy1 = j * dy, (j + 1) * dy
 
-                cx0 = i * dx
-                cx1 = (i+1) * dx
-                cy0 = j * dy
-                cy1 = (j+1) * dy
-
-                clipped = clip_segment_to_box(
-                    p0, p1,
-                    cx0, cx1, cy0, cy1
-                )
+                # Clip the segment to the cell
+                clipped = clip_segment_to_box(p0, p1, cx0, cx1, cy0, cy1)
                 if clipped is None:
                     continue
 
                 q0, q1 = clipped
 
-                # parametric coordinates
+                # parametric coordinates within the cell
                 xi0  = (q0[0] - cx0) / dx
                 eta0 = (q0[1] - cy0) / dy
                 xi1  = (q1[0] - cx0) / dx
                 eta1 = (q1[1] - cy0) / dy
 
+                # Compute segment length in physical space
+                length = np.hypot(q1[0] - q0[0], q1[1] - q0[1])
+                if length < GEOM_TOL:
+                    if debug:
+                        print(f"Skipped degenerate segment in cell {(i,j)}: {(xi0, eta0, xi1, eta1)}")
+                    continue
+
+                # Keep only segments that actually lie (at least partially) inside the cell
+                if (max(xi0, xi1) < -EPS or min(xi0, xi1) > 1.0 + EPS or
+                    max(eta0, eta1) < -EPS or min(eta0, eta1) > 1.0 + EPS):
+                    if debug:
+                        print(f"Skipped out-of-cell segment in cell {(i,j)}: {(xi0, eta0, xi1, eta1)}")
+                    continue
+
                 seg = (xi0, eta0, xi1, eta1)
-                subsegment_length = clipped_segment_length(i, j, seg, dx, dy)
-                if subsegment_length > GEOM_TOL:
-                    segments[(i,j)].append(seg)
-                elif debug:
-                    print(f"Dropped degenerate segment in cell {(i,j)}: {seg}")
+                segments[(i, j)].append(seg)
+                if debug:
+                    print(f"+++ seg in cell {(i,j)}: {seg}")
 
     return dict(segments)
+
 
 def is_inside_polygon(poly, point):
     """
@@ -181,13 +195,14 @@ class PolyGrid:
     A class to compute the intersection of a polygon with a 2D rectilinear grid
     """
 
-    def __init__(self, poly, Nx, Ny, dx, dy, debug=False):
+    def __init__(self, poly, Nx, Ny, dx, dy, debug=False, closed=True):
         """
         Constructor
         Args:
             poly: List of (x, y) tuples representing the polygon vertices.
             Nx, Ny are the number of x and y cells
             dx, dy is the grid space
+            closed whether the contour closes or not
         """
 
         self.Nx, self.Ny = Nx, Ny
@@ -201,7 +216,7 @@ class PolyGrid:
         # where 0 <= xi, eta <= 1 are the start/end parametric coordinates of a sub-segment of the polygon. 
         # Note that if the sub-segment falls onto a cell edge then the sub-segment may be associated to 
         # one or the other cell.
-        self.cell_segments = polygon_cell_segments_parametric(self.poly, self.Nx, self.Ny, self.dx, self.dy, debug=debug)
+        self.cell_segments = polygon_cell_segments_parametric(self.poly, self.Nx, self.Ny, self.dx, self.dy, debug=debug, closed=closed)
 
         # compute the flux matrices A and B
         self.flux_poly_matrices()
@@ -234,12 +249,18 @@ class PolyGrid:
         # compute the residuals
         g = self.get_flux_residuals(uflux, vflux)
 
+        print(f'*** g = {g}')
+
         # compute A A^T + B B^T
         M = self.get_M()
+
+        print(f'*** M = {M}')
 
         # solve the (small) matrix system
         eps = 1e-14 * np.trace(M)
         lambda_ = np.linalg.solve(M + eps*np.eye(M.shape[0]), g) # guard against singular M
+
+        print(f'*** lambda_ = {lambda_}')
 
         # update the fluxes
 
@@ -300,35 +321,58 @@ class PolyGrid:
 
     def flux_poly_matrices(self):
         """
-        Compute the sparse matrices to estimate the flux on the surface of a polygon
+        Compute the sparse matrices A and B to estimate the flux on the surface of a polygon.
+
+        This version checks that contributions are within the valid staggered grid bounds:
+            - uflux has shape (Nx+1, Ny)
+            - vflux has shape (Nx, Ny+1)
         """
         self.A = {}
         self.B = {}
 
-        # iterate over all the intersected cells
         for cell, segments in self.cell_segments.items():
-            # cell indices
+
             i, j = cell
 
-            if not (0 <= i+1 <= self.Nx and 0 <= j+1 <= self.Ny):
-                continue  # segment outside the valid flux grid
+            # Skip cells fully outside the valid cell index range
+            if not (0 <= i <= self.Nx-1 and 0 <= j <= self.Ny-1):
+                continue
 
-            # iterate over the segments in the cell
+            # Initialize sparse matrix entries to zero
+            self.A[(i, j, i, j)] = 0.0
+            self.A[(i, j, i+1, j)] = 0.0
+            self.B[(i, j, i, j)] = 0.0
+            self.B[(i, j, i, j+1)] = 0.0
+
             for seg in segments:
-                # get the start/end parametric coordinates of the subsegment
-                xsi0, eta0, xsi1, eta1 = seg
 
-                # use the weights of Eq (10) in https://journals.ametsoc.org/view/journals/mwre/147/1/mwr-d-18-0146.1.xml
+                print(f'*** seg = {seg}')
+
+                xsi0, eta0, xsi1, eta1 = seg
                 dxsi, deta = xsi1 - xsi0, eta1 - eta0
                 axsi, aeta = 0.5*(xsi0 + xsi1), 0.5*(eta0 + eta1)
 
-                # x flux
-                self.A[(i, j, i  , j)] = self.A.get((i, j, i  , j), 0.0) + deta*(1. - axsi)
-                self.A[(i, j, i+1, j)] = self.A.get((i, j, i+1, j), 0.0) + deta*axsi
+                # ---------------------------
+                # x-flux contribution (u*dx)
+                # ---------------------------
+                # uflux has shape (Nx+1, Ny)
+                if 0 <= i <= self.Nx-1 and 0 <= j <= self.Ny-1:
+                    if 0 <= i+1 <= self.Nx:
+                        self.A[(i, j, i, j)] += deta * (1.0 - axsi)
+                        self.A[(i, j, i+1, j)] += deta * axsi
 
-                # y flux
-                self.B[(i, j, i, j  )] = self.B.get((i, j, i, j  ), 0.0) + dxsi*(1. - aeta)
-                self.B[(i, j, i, j+1)] = self.B.get((i, j, i, j+1), 0.0) + dxsi*aeta
+                # ---------------------------
+                # y-flux contribution (v*dy)
+                # ---------------------------
+                # vflux has shape (Nx, Ny+1)
+                if 0 <= i <= self.Nx-1 and 0 <= j <= self.Ny-1:
+                    if 0 <= j+1 <= self.Ny:
+                        self.B[(i, j, i, j)] += dxsi * (1.0 - aeta)
+                        self.B[(i, j, i, j+1)] += dxsi * aeta
+
+            print(f'*** self.A = {self.A}')
+            print(f'*** self.B = {self.B}')
+
 
     def get_flux_in_cell(self, uflux, vflux):
         """
@@ -469,12 +513,107 @@ def test2():
     tot_flux = pg.get_total_flux(uflux=uflux, vflux=vflux)
     print(f'tot_flux = {tot_flux}')
 
+
+def test6():
+    Lx, Ly = 2.0, 2.0
+    Nx, Ny = 2, 2
+    dx, dy = Lx/Nx, Ly/Ny
+    polygon = [(0.5*dx, 1.01*dy), (1.5*dx, 1.01*dy), (1.5*dx, 1.5*dy), (0.5*dx, 1.5*dy)]
+    pg = PolyGrid(poly=polygon, Nx=Nx, Ny=Ny, dx=dx, dy=dy, debug=True)
+    uflux = np.zeros((Nx+1, Ny), float)
+    vflux = np.zeros((Nx, Ny+1), float)
+    uflux[0,1] = 1
+    uflux[1,1] = 1
+    uflux_out = uflux.copy()
+    vflux_out = vflux.copy()
+    pg.update_fluxes(uflux=uflux_out, vflux=vflux_out)
+    # since the polygon's segment runs parallel to the v flux and there is no uflux, 
+    # no update is expected
+    print('in:')
+    print(f'uflux = {uflux}')
+    print(f'vflux = {vflux}')
+    print('out:')
+    print(f'uflux = {uflux_out}')
+    print(f'vflux = {vflux_out}')
+
+    tol = 1.e-10
+    # assert abs(vflux_in[0, 0] - vflux_out[0, 0]) < tol
+    # assert abs(vflux_in[0, 1] - vflux_out[0, 1]) < tol
+    # assert abs(uflux_in[0, 0] - uflux_out[0, 0]) < tol
+    # assert abs(uflux_in[1, 0] - uflux_out[1, 0]) < tol
+
+
+def test5():
+    Lx, Ly = 3.0, 3.0
+    Nx, Ny = 3, 3
+    dx, dy = Lx/Nx, Ly/Ny
+    polygon = [(1.01*dx, 1.01*dy), (1.99*dx, 1.01*dy), (1.99*dx, 1.99*dy), (1.01*dx, 1.99*dy)]
+    pg = PolyGrid(poly=polygon, Nx=Nx, Ny=Ny, dx=dx, dy=dy, debug=True)
+    u = np.zeros((Nx+1, Ny), float)
+    v = np.zeros((Nx, Ny+1), float)
+    u[1,1] = 1
+    v[1,1] = 2
+    u[2,1] = 3
+    v[1,2] = 4
+    uflux_in = u * dy
+    vflux_in = v * dx
+    uflux_out = uflux_in.copy()
+    vflux_out = vflux_in.copy()
+    pg.update_fluxes(uflux=uflux_out, vflux=vflux_out)
+    # since the polygon's segment runs parallel to the v flux and there is no uflux, 
+    # no update is expected
+    print('in:')
+    print(f'uflux[1,1] = {uflux_in[1,1]} uflux[2,1] = {uflux_in[2,1]}')
+    print(f'vflux[1,1] = {vflux_in[1,1]} vflux[1,2] = {vflux_in[1,2]}')
+    print('out:')
+    print(f'uflux[1,1] = {uflux_out[1,1]} uflux[2,1] = {uflux_out[2,1]}')
+    print(f'vflux[1,1] = {vflux_out[1,1]} vflux[1,2] = {vflux_out[1,2]}')
+
+    tol = 1.e-10
+    # assert abs(vflux_in[0, 0] - vflux_out[0, 0]) < tol
+    # assert abs(vflux_in[0, 1] - vflux_out[0, 1]) < tol
+    # assert abs(uflux_in[0, 0] - uflux_out[0, 0]) < tol
+    # assert abs(uflux_in[1, 0] - uflux_out[1, 0]) < tol
+
+
+def test4():
+    Lx, Ly = 2.0, 1.0
+    Nx, Ny = 2, 1
+    dx, dy = Lx/Nx, Ly/Ny
+    polygon = [(0.0*dx, 0.0*dy), (2.0*dx, 0.0*dy), (1.0*dx, 0.5*dy)]
+    pg = PolyGrid(poly=polygon, Nx=Nx, Ny=Ny, dx=dx, dy=dy, debug=True)
+    u = np.zeros((Nx+1, Ny), float)
+    v = np.zeros((Nx, Ny+1), float)
+    u[0, 0] = 1.0
+    u[1, 0] = 0.5
+    u[2, 0] = 1.0
+    uflux_in = u * dy
+    vflux_in = v * dx
+    uflux_out = uflux_in.copy()
+    vflux_out = vflux_in.copy()
+    pg.update_fluxes(uflux=uflux_out, vflux=vflux_out)
+    # since the polygon's segment runs parallel to the v flux and there is no uflux, 
+    # no update is expected
+    print('in:')
+    print(f'uflux = {uflux_in}')
+    print(f'vflux = {vflux_in}')
+    print('out:')
+    print(f'uflux = {uflux_out}')
+    print(f'vflux = {vflux_out}')
+
+    tol = 1.e-10
+    # assert abs(vflux_in[0, 0] - vflux_out[0, 0]) < tol
+    # assert abs(vflux_in[0, 1] - vflux_out[0, 1]) < tol
+    # assert abs(uflux_in[0, 0] - uflux_out[0, 0]) < tol
+    # assert abs(uflux_in[1, 0] - uflux_out[1, 0]) < tol
+
+
 def test3():
     Lx, Ly = 1.0, 1.0
     Nx, Ny = 1, 1
     dx, dy = Lx/Nx, Ly/Ny
-    polygon = [(0.5*dx, 1.2*dy), (0.5*dx, -0.2*dy), (1.1*dx, -0.2*dy)]
-    pg = PolyGrid(poly=polygon, Nx=Nx, Ny=Ny, dx=dx, dy=dy, debug=True)
+    polygon = [(0.5*dx, 1*dy), (0.5*dx, 0*dy)]
+    pg = PolyGrid(poly=polygon, Nx=Nx, Ny=Ny, dx=dx, dy=dy, debug=True, closed=False)
     u = np.zeros((Nx+1, Ny), float)
     v = np.zeros((Nx, Ny+1), float)
     uflux_in = u * dy
@@ -502,4 +641,7 @@ def test3():
 if __name__ == '__main__':
     #test1()
     #test2()
-    test3()
+    test3() # currently fails
+    #test4()
+    #test5()
+    #test6()
