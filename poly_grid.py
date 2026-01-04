@@ -400,6 +400,50 @@ class PolyGrid:
             tot_flux += flx
 
         return tot_flux
+    
+
+    def get_edge_fractions(self):
+        """
+        Return the valid fractions of each edge
+        """
+        dxfrac = np.ones((self.Nx, self.Ny + 1), float)
+        dyfrac = np.ones((self.Nx + 1, self.Ny), float)
+
+        tol = 1.e-10
+
+        # iterate over the cut-cells
+        print(f'cell_segments = {self.cell_segments}')
+        for cell, segments in self.cell_segments.items():
+            i, j = cell
+            for seg in segments:
+                xsi0, eta0, xsi1, eta1 = seg
+                isx0 = 1 - xsi0
+                isx1 = 1 - xsi1
+                ate0 = 1 - eta0
+                ate1 = 1 - eta1
+                # iterate over left/right and bottom/top
+                for side in 0, 1:
+                    edis = 1 - side
+
+                    # dxfrac
+                    if abs(eta0 - side) < tol:
+                        # eta0 is 0 or 1
+                        dxfrac[i, j + side] = isx0*edis + xsi0*side
+
+                    if abs(eta1 - side) < tol:
+                        # eta1 is 0 or 1
+                        dxfrac[i, j + side] = isx1*side + xsi1*edis
+
+                    # dyfrac
+                    if abs(xsi0 - side) < tol:
+                        # xsi0 is 0 or 1
+                        dyfrac[i + side, j] = ate0*edis + eta0*side
+
+                    if abs(xsi1 - side) < tol:
+                        # xsi1 is 0 or 1
+                        dyfrac[i + side, j] = ate1*side + eta1*edis
+
+        return dxfrac, dyfrac
 
 
     def check_polygon_coverage_length(self, tol=1e-10):
@@ -508,6 +552,24 @@ def test2():
     tot_flux = pg.get_total_flux(uflux=uflux, vflux=vflux)
     print(f'tot_flux = {tot_flux}')
 
+def test_edge_fracs():
+    Lx, Ly = 2.0, 2.0
+    Nx, Ny = 2, 2
+    dx, dy = Lx/Nx, Ly/Ny
+    polygon = [(1.0*dx, 0.3*dy), (1.3*dx, 1.0*dy), (1.7*dx, 1.8*dy), (1.2*dx, 2.0*dy), (0.7*dx, 2.0*dy), (0.2*dx, 1.0*dy),]
+    pg = PolyGrid(poly=polygon, Nx=Nx, Ny=Ny, dx=dx, dy=dy, debug=True, closed=True)
+    dxfrac, dyfrac = pg.get_edge_fractions()
+    print(f'dxfrac = {dxfrac}')
+    print(f'dyfrac = {dyfrac}')
+    tol = 1.e-10
+    assert abs(dxfrac[0, 0] - 1) < tol
+    assert abs(dxfrac[1, 0] - 1) < tol
+    assert abs(dxfrac[0, 1] - 0.2) < tol
+    assert abs(dxfrac[1, 1] - 0.7) < tol
+    assert abs(dxfrac[0, 2] - 0.7) < tol
+    assert abs(dxfrac[1, 2] - 0.8) < tol
+     
+
 def test4():
     Lx, Ly = 1.0, 1.0
     Nx, Ny = 1, 1
@@ -596,3 +658,4 @@ if __name__ == '__main__':
     test4()
     #test5()
     #test6()
+    test_edge_fracs()
