@@ -247,6 +247,7 @@ class PolyGrid:
 
         # compute A A^T + B B^T
         self.M = self.get_M()
+        self.compute_edge_fractions()
 
     
     def update_fluxes(self, uflux, vflux):
@@ -403,12 +404,12 @@ class PolyGrid:
         return tot_flux
     
 
-    def get_edge_fractions(self):
+    def compute_edge_fractions(self):
         """
-        Return the valid fractions of each edge
+        Compute the valid fractions for each edge
         """
-        dxfrac = np.ones((self.Nx, self.Ny + 1), float)
-        dyfrac = np.ones((self.Nx + 1, self.Ny), float)
+        self.dxfrac = np.ones((self.Nx, self.Ny + 1), float)
+        self.dyfrac = np.ones((self.Nx + 1, self.Ny), float)
 
         tol = 1.e-10
 
@@ -429,10 +430,10 @@ class PolyGrid:
                     # dxfrac
                     if abs(eta0 - side) < tol:
                         # eta0 is 0 or 1
-                        dxfrac[i, j + side] = isx0*edis + xsi0*side
+                        self.dxfrac[i, j + side] = isx0*edis + xsi0*side
                     elif abs(eta1 - side) < tol:
                         # eta1 is 0 or 1
-                        dxfrac[i, j + side] = isx1*side + xsi1*edis
+                        self.dxfrac[i, j + side] = isx1*side + xsi1*edis
                     else: 
                         # no interesection on this edge but still need to check if the edge is 
                         # fully inside the polygon
@@ -440,15 +441,15 @@ class PolyGrid:
                         p1 = ((i + 1)*self.dx, (j + side)*self.dy)
                         if is_inside_polygon(self.poly, p0) and \
                            is_inside_polygon(self.poly, p1):
-                            dxfrac[i, j + side] = 0.0
+                            self.dxfrac[i, j + side] = 0.0
 
                     # dyfrac
                     if abs(xsi0 - side) < tol:
                         # xsi0 is 0 or 1
-                        dyfrac[i + side, j] = ate0*side + eta0*edis
+                        self.dyfrac[i + side, j] = ate0*side + eta0*edis
                     elif abs(xsi1 - side) < tol:
                         # xsi1 is 0 or 1
-                        dyfrac[i + side, j] = ate1*edis + eta1*side
+                        self.dyfrac[i + side, j] = ate1*edis + eta1*side
                     else: 
                         # no interesection on this edge but still need to check if the edge is 
                         # fully inside the polygon
@@ -456,9 +457,8 @@ class PolyGrid:
                         p1 = ((i + side)*self.dx, (j + 1)*self.dy)
                         if is_inside_polygon(self.poly, p0) and \
                            is_inside_polygon(self.poly, p1):
-                            dyfrac[i + side, j] = 0.0
+                            self.dyfrac[i + side, j] = 0.0
 
-        return dxfrac, dyfrac
 
 
     def check_polygon_coverage_length(self, tol=1e-10):
@@ -573,7 +573,7 @@ def test_edge_fracs():
     dx, dy = Lx/Nx, Ly/Ny
     polygon = [(1.0*dx, 0.3*dy), (1.3*dx, 1.0*dy), (1.7*dx, 1.8*dy), (1.2*dx, 2.0*dy), (0.7*dx, 2.0*dy), (0.2*dx, 1.0*dy),]
     pg = PolyGrid(poly=polygon, Nx=Nx, Ny=Ny, dx=dx, dy=dy, debug=True, closed=True)
-    dxfrac, dyfrac = pg.get_edge_fractions()
+    dxfrac, dyfrac = pg.dxfrac, pg.dyfrac
     print(f'dxfrac = {dxfrac}')
     print(f'dyfrac = {dyfrac}')
     tol = 1.e-10
