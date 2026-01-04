@@ -429,19 +429,33 @@ class PolyGrid:
                     if abs(eta0 - side) < tol:
                         # eta0 is 0 or 1
                         dxfrac[i, j + side] = isx0*edis + xsi0*side
-
-                    if abs(eta1 - side) < tol:
+                    elif abs(eta1 - side) < tol:
                         # eta1 is 0 or 1
                         dxfrac[i, j + side] = isx1*side + xsi1*edis
+                    else: 
+                        # no interesection on this edge but still need to check if the edge is 
+                        # fully inside the polygon
+                        p0 = ((i + 0)*self.dx, (j + side)*self.dy)
+                        p1 = ((i + 1)*self.dx, (j + side)*self.dy)
+                        if is_inside_polygon(self.poly, p0) and \
+                           is_inside_polygon(self.poly, p1):
+                            dxfrac[i, j + side] = 0.0
 
                     # dyfrac
                     if abs(xsi0 - side) < tol:
                         # xsi0 is 0 or 1
                         dyfrac[i + side, j] = ate0*side + eta0*edis
-
-                    if abs(xsi1 - side) < tol:
+                    elif abs(xsi1 - side) < tol:
                         # xsi1 is 0 or 1
                         dyfrac[i + side, j] = ate1*edis + eta1*side
+                    else: 
+                        # no interesection on this edge but still need to check if the edge is 
+                        # fully inside the polygon
+                        p0 = ((i + side)*self.dx, (j + 0)*self.dy)
+                        p1 = ((i + side)*self.dx, (j + 1)*self.dy)
+                        if is_inside_polygon(self.poly, p0) and \
+                           is_inside_polygon(self.poly, p1):
+                            dyfrac[i + side, j] = 0.0
 
         return dxfrac, dyfrac
 
@@ -568,6 +582,13 @@ def test_edge_fracs():
     assert abs(dxfrac[1, 1] - 0.7) < tol
     assert abs(dxfrac[0, 2] - 0.7) < tol
     assert abs(dxfrac[1, 2] - 0.8) < tol
+
+    assert abs(dyfrac[0, 0] - 1) < tol
+    assert abs(dyfrac[0, 1] - 1) < tol
+    assert abs(dyfrac[1, 0] - 0.3) < tol
+    assert abs(dyfrac[1, 1] - 0) < tol # completely inside the polygon
+    assert abs(dyfrac[2, 0] - 1) < tol
+    assert abs(dyfrac[2, 1] - 1) < tol
      
 
 def test4():
