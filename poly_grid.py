@@ -244,6 +244,10 @@ class PolyGrid:
             self.k2ij[k] = ij
             self.ij2k[ij] = k
             k += 1
+
+        # compute A A^T + B B^T
+        self.M = self.get_M()
+
     
     def update_fluxes(self, uflux, vflux):
         """
@@ -255,12 +259,9 @@ class PolyGrid:
         # compute the residuals
         g = self.get_flux_residuals(uflux, vflux)
 
-        # compute A A^T + B B^T
-        M = self.get_M()
-
         # solve the (small) matrix system
-        eps = 1e-14 * np.trace(M)
-        lambda_ = np.linalg.solve(M + eps*np.eye(M.shape[0]), g) # guard against singular M
+        eps = 1e-14 * np.trace(self.M)
+        lambda_ = np.linalg.solve(self.M + eps*np.eye(self.M.shape[0]), g) # guard against singular M
 
         # update the fluxes
 
