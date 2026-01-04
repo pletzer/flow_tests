@@ -2,7 +2,7 @@ import numpy as np
 import vtk
 from vtk.util import numpy_support
 from numba import njit, prange
-from poly_grid import is_inside_polygon, flux_poly_matrices, flux
+from poly_grid import is_inside_polygon, PolyGrid 
 
 # ============================================================
 # Parameters
@@ -17,11 +17,10 @@ nu = 0.01
 p_in  = 1.0     # inlet pressure
 p_out = 0.0     # outlet pressure
 
-nsteps  = 100 #1001
+nsteps  = 1001
 p_iters = 80
 vtk_stride = 100
 
-nudge_factor_interface = 10.0
 
 # ============================================================
 # Staggered fields (MAC grid)
@@ -31,9 +30,12 @@ v = np.zeros((Nx, Ny+1))     # y-velocity (faces)
 p = np.zeros((Nx, Ny))       # pressure (cells)
 
 # ============================================================
-# Obstacle (cell-centered mask)
+# Obstacle represented as a polygon
 # ============================================================
 poly = [(0.3*Lx, 0.0*Ly), (0.5*Lx, 0.0*Ly), (0.5*Lx, 0.6*Ly), (0.3*Lx, 0.6*Ly)]
+
+# poly_grid computes the intersection of an polygon with a grid
+poly_grid = PolyGrid(poly, Nx=Nx, Ny=Ny, dx=dx, dy=dy, debug=False, closed=True)
 
 # set the mask
 solid = np.zeros((Nx, Ny), dtype=bool)
@@ -42,8 +44,6 @@ for j in range(Ny):
         xy = ((i + 0.5)*dx, (j + 0.5)*dy)
         if is_inside_polygon(poly, xy):
             solid[i, j] = True
-
-u_interface_matrix, v_interface_matrix = flux_poly_matrices(poly, Nx, Ny, dx, dy)
 
 # ============================================================
 # Utility functions
@@ -65,62 +65,20 @@ def apply_velocity_bc(u, v):
     # Inlet/outlet: velocity is free (pressure-driven)
 
 
-def nudge_zero_interface_flux(Amatrix, Bmatrix, u, v, dt, nudge_factor_interface):
+def enforce_slip_obstacle(u, v, dx, dy, poly_grid):
 
-    uin = u.copy()
-    vin = v.copy()
+    # fluxes from velocity field, taking into account the fact edges
+    # intersected by the obstacle are only partially valid
+    uflux = u * poly_grid.dyfrac * dy
+    vflux = v * poly_grid.dxfrac * dx
 
-    print(f'uin # of Nans = {np.count_nonzero(np.isnan(uin))}')
-    print(f'vin # of Nans = {np.count_nonzero(np.isnan(vin))}')
+    poly_grid.update_fluxes(uflux=uflux, vflux=vflux)
 
-    for cell in Amatrix:
-        i, j = cell
-        u[i, j] -= nudge_factor_interface * dt * Amatrix[cell] * uin[i, j]
+    # back to velocity
+    u = np.where(poly_grid.dyfrac > 0, uflux / (poly_grid.dyfrac * dy), 0.0)
+    v = np.where(poly_grid.dxfrac > 0, vflux / (poly_grid.dxfrac * dx), 0.0)
 
-    for cell in Bmatrix:
-        i, j = cell
-        v[i, j] -= nudge_factor_interface * dt * Bmatrix[cell] * vin[i, j]
-
-
-def enforce_slip_obstacle(u, v, solid):
-
-    Nx, Ny = solid.shape
-
-    # --------------------------------
-    # u-velocity (vertical faces)
-    # --------------------------------
-    for i in range(1, Nx):
-        for j in range(Ny):
-            left_solid  = solid[i-1, j]
-            right_solid = solid[i, j]
-
-            if left_solid and not right_solid:
-                # Normal face → no penetration
-                u[i, j] = 0.0
-
-            elif right_solid and not left_solid:
-                u[i, j] = 0.0
-
-            elif left_solid and right_solid:
-                # Inside obstacle
-                u[i, j] = 0.0
-
-    # --------------------------------
-    # v-velocity (horizontal faces)
-    # --------------------------------
-    for i in range(Nx):
-        for j in range(1, Ny):
-            bottom_solid = solid[i, j-1]
-            top_solid    = solid[i, j]
-
-            if bottom_solid and not top_solid:
-                v[i, j] = 0.0
-
-            elif top_solid and not bottom_solid:
-                v[i, j] = 0.0
-
-            elif bottom_solid and top_solid:
-                v[i, j] = 0.0
+    return u, v
 
 @njit
 def predictor(Nx, Ny, dx, dy, dt, nu, u, v):
@@ -264,8 +222,7 @@ for step in range(nsteps):
     print(f'starting step {step}')
 
     apply_velocity_bc(u, v)
-    #enforce_slip_obstacle(u, v, solid)
-    nudge_zero_interface_flux(u_interface_matrix, v_interface_matrix, u, v, dt, nudge_factor_interface)
+    u, v = enforce_slip_obstacle(u, v, dx, dy, poly_grid)
 
     # --------------------------------------------------------
     # Predictor step (u*)
@@ -273,8 +230,7 @@ for step in range(nsteps):
     u_star, v_star = predictor(Nx, Ny, dx, dy, dt, nu, u, v)
 
     apply_velocity_bc(u_star, v_star)
-    #enforce_slip_obstacle(u_star, v_star, solid)
-    #nudge_zero_interface_flux(u_interface_matrix, v_interface_matrix, u_star, v_star, dt, nudge_factor_interface)
+    u_star, v_star = enforce_slip_obstacle(u_star, v_star, dx, dy, poly_grid)
 
     # --------------------------------------------------------
     # Pressure Poisson equation
@@ -287,8 +243,7 @@ for step in range(nsteps):
     u, v = projection(Nx, Ny, dx, dy, dt, p, u_star, v_star, u, v)
 
     apply_velocity_bc(u, v)
-    #enforce_slip_obstacle(u, v, solid)
-    #nudge_zero_interface_flux(u_interface_matrix, v_interface_matrix, u, v, dt, nudge_factor_interface)
+    u, v = enforce_slip_obstacle(u, v, dx, dy, poly_grid)
 
     # --------------------------------------------------------
     # Output
