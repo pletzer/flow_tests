@@ -414,7 +414,6 @@ class PolyGrid:
         tol = 1.e-10
 
         # iterate over the cut-cells
-        print(f'cell_segments = {self.cell_segments}')
         for cell, segments in self.cell_segments.items():
             i, j = cell
             for seg in segments:

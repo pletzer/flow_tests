@@ -37,7 +37,7 @@ poly = [(0.3*Lx, 0.0*Ly), (0.5*Lx, 0.0*Ly), (0.5*Lx, 0.6*Ly), (0.3*Lx, 0.6*Ly)]
 # poly_grid computes the intersection of an polygon with a grid
 poly_grid = PolyGrid(poly, Nx=Nx, Ny=Ny, dx=dx, dy=dy, debug=False, closed=True)
 
-# set the mask
+# set the cell-centred mask
 solid = np.zeros((Nx, Ny), dtype=bool)
 for j in range(Ny):
     for i in range(Nx):
@@ -75,8 +75,9 @@ def enforce_slip_obstacle(u, v, dx, dy, poly_grid):
     poly_grid.update_fluxes(uflux=uflux, vflux=vflux)
 
     # back to velocity
-    u = np.where(poly_grid.dyfrac > 0, uflux / (poly_grid.dyfrac * dy), 0.0)
-    v = np.where(poly_grid.dxfrac > 0, vflux / (poly_grid.dxfrac * dx), 0.0)
+    tol = 1.e-8 # need to avoid leakeage
+    u = np.where(poly_grid.dyfrac * dy > tol, uflux / (poly_grid.dyfrac * dy), 0.0)
+    v = np.where(poly_grid.dxfrac * dx > tol, vflux / (poly_grid.dxfrac * dx), 0.0)
 
     return u, v
 
@@ -219,7 +220,7 @@ def write_vtr(fname, u, v, p):
 # ============================================================
 for step in range(nsteps):
 
-    print(f'starting step {step}')
+    #print(f'starting step {step}')
 
     apply_velocity_bc(u, v)
     u, v = enforce_slip_obstacle(u, v, dx, dy, poly_grid)
