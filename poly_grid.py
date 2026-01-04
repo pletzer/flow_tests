@@ -92,13 +92,17 @@ def polygon_cell_segments_parametric(polygon, Nx, Ny, dx, dy, debug=False, close
     polygon = ensure_ccw(np.asarray(polygon))
     segments = defaultdict(list)
 
-    n = len(polygon) - 1
     if closed:
-        n = len(polygon)
+        polygon.append(polygon[0])
     
-    for k in range(n):
+    # number of segments
+    nseg = len(polygon) - 1
+
+    print(f'+++ nseg = {nseg}')
+    
+    for k in range(nseg):
         p0 = polygon[k]
-        p1 = polygon[(k + 1) % n]
+        p1 = polygon[k + 1]
 
         # Bounding box in index space
         xmin, xmax = min(p0[0], p1[0]), max(p0[0], p1[0])
@@ -614,10 +618,9 @@ def test3():
     dx, dy = Lx/Nx, Ly/Ny
     polygon = [(0.5*dx, 1*dy), (0.5*dx, 0*dy)]
     pg = PolyGrid(poly=polygon, Nx=Nx, Ny=Ny, dx=dx, dy=dy, debug=True, closed=False)
-    u = np.zeros((Nx+1, Ny), float)
-    v = np.zeros((Nx, Ny+1), float)
-    uflux_in = u * dy
-    vflux_in = v * dx
+
+    uflux_in = np.zeros((Nx+1, Ny), float)
+    vflux_in = np.zeros((Nx, Ny+1), float)
     vflux_in[0, 0] = 1.0 # lower face
     vflux_in[0, 1] = 1.0 # upper face
     uflux_out = uflux_in.copy()
@@ -637,6 +640,30 @@ def test3():
     assert abs(vflux_in[0, 1] - vflux_out[0, 1]) < tol
     assert abs(uflux_in[0, 0] - uflux_out[0, 0]) < tol
     assert abs(uflux_in[1, 0] - uflux_out[1, 0]) < tol
+
+
+    uflux_in = np.zeros((Nx+1, Ny), float)
+    vflux_in = np.zeros((Nx, Ny+1), float)
+    uflux_in[0, 0] = 1.0 # left face
+    uflux_out = uflux_in.copy()
+    vflux_out = vflux_in.copy()
+    pg.update_fluxes(uflux=uflux_out, vflux=vflux_out)
+    # since the polygon's segment runs parallel to the v flux and there is no uflux, 
+    # no update is expected
+    print('in:')
+    print(f'uflux0 = {uflux_in[0, 0]} uflux1 = {uflux_in[1, 0]}')
+    print(f'vflux0 = {vflux_in[0, 0]} vflux1 = {vflux_in[0, 1]}')
+    print('out:')
+    print(f'uflux0 = {uflux_out[0, 0]} uflux1 = {uflux_out[1, 0]}')
+    print(f'vflux0 = {vflux_out[0, 0]} vflux1 = {vflux_out[0, 1]}')
+
+    tol = 1.e-10
+    assert abs(vflux_in[0, 0] - vflux_out[0, 0]) < tol
+    assert abs(vflux_in[0, 1] - vflux_out[0, 1]) < tol
+    assert abs(uflux_in[0, 0] - uflux_out[0, 0]) < tol
+    assert abs(uflux_in[1, 0] - uflux_out[1, 0]) < tol
+
+   
 
 if __name__ == '__main__':
     #test1()
