@@ -246,7 +246,7 @@ class PolyGrid:
             k += 1
 
         # compute A A^T + B B^T
-        self.M = self.get_M()
+        self.compute_M()
         self.compute_edge_fractions()
 
     
@@ -293,13 +293,13 @@ class PolyGrid:
         return g
 
 
-    def get_M(self):
+    def compute_M(self):
         """
         Compute the matrix A A^T + B B^T in flat index space (k)
         """
         # number of intersected cells
         Nc = len(self.k2ij)
-        M = np.zeros((Nc, Nc), float)
+        self.M = np.zeros((Nc, Nc), float)
 
         # A contribution
         for (ic1, jc1, if1, jf1), a1 in self.A.items():
@@ -307,7 +307,7 @@ class PolyGrid:
             for (ic2, jc2, if2, jf2), a2 in self.A.items():
                 if (if1, jf1) == (if2, jf2):
                     k2 = self.ij2k[(ic2, jc2)]
-                    M[k1, k2] += a1 * a2
+                    self.M[k1, k2] += a1 * a2
 
         # B contribution
         for (ic1, jc1, if1, jf1), b1 in self.B.items():
@@ -315,10 +315,7 @@ class PolyGrid:
             for (ic2, jc2, if2, jf2), b2 in self.B.items():
                 if (if1, jf1) == (if2, jf2):
                     k2 = self.ij2k[(ic2, jc2)]
-                    M[k1, k2] += b1 * b2
-
-        return M
-
+                    self.M[k1, k2] += b1 * b2
 
 
     def flux_poly_matrices(self):

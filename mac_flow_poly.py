@@ -32,7 +32,7 @@ p = np.zeros((Nx, Ny))       # pressure (cells)
 # ============================================================
 # Obstacle represented as a polygon
 # ============================================================
-poly = [(0.3*Lx, 0.0*Ly), (0.5*Lx, 0.0*Ly), (0.5*Lx, 0.6*Ly), (0.3*Lx, 0.6*Ly)]
+poly = [(0.3*Lx, 0.0*Ly), (0.5*Lx, 0.0*Ly), (0.5*Lx, 0.60*Ly), (0.3*Lx, 0.60*Ly)]
 
 # poly_grid computes the intersection of an polygon with a grid
 poly_grid = PolyGrid(poly, Nx=Nx, Ny=Ny, dx=dx, dy=dy, debug=False, closed=True)
@@ -230,7 +230,7 @@ for step in range(nsteps):
     #print(f'starting step {step}')
 
     apply_velocity_bc(u, v)
-    u, v = enforce_slip_obstacle(u, v, dx, dy, poly_grid)
+    #u, v = enforce_slip_obstacle(u, v, dx, dy, poly_grid)
 
     # --------------------------------------------------------
     # Predictor step (u*)
@@ -251,7 +251,7 @@ for step in range(nsteps):
     u, v = projection(Nx, Ny, dx, dy, dt, p, u_star, v_star, u, v)
 
     apply_velocity_bc(u, v)
-    u, v = enforce_slip_obstacle(u, v, dx, dy, poly_grid)
+    #u, v = enforce_slip_obstacle(u, v, dx, dy, poly_grid)
 
     # --------------------------------------------------------
     # Output
