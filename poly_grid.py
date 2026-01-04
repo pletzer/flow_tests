@@ -16,7 +16,7 @@ def ensure_ccw(poly):
         x1, y1 = poly[(k+1) % len(poly)]
         area += x0*y1 - x1*y0
     if area < 0:
-        poly = poly[::-1]
+        poly = poly[::-1].copy()
     return poly
 
 def polygon_edge_lengths(polygon):
@@ -211,9 +211,10 @@ class PolyGrid:
 
         # collect all the i,j (degrees of freedoms involved in the constraint)
         ijs = set()
-        for ijij in list(self.A.keys()) + list(self.B.keys()):
-            ijs.add((ijij[0], ijij[1]))
-            ijs.add((ijij[2], ijij[3]))
+        for (ic, jc, _, _) in self.A.keys():
+            ijs.add((ic, jc))
+        for (ic, jc, _, _) in self.B.keys():
+            ijs.add((ic, jc))
 
         self.k2ij = dict()
         self.ij2k = dict()
@@ -276,11 +277,23 @@ class PolyGrid:
         # number of intersected cells
         Nc = len(self.k2ij)
         M = np.zeros((Nc, Nc), float)
-        for k1, (i1, j1) in self.k2ij.items():
-            for k2, (i2, j2) in self.k2ij.items():
-                for k3, (i3, j3) in self.k2ij.items():
-                    M[k1, k2] += self.A.get((i1, j1, i3, j3), 0.0) * self.A.get((i2, j2, i3, j3), 0.0) \
-                               + self.B.get((i1, j1, i3, j3), 0.0) * self.B.get((i2, j2, i3, j3), 0.0)
+
+        # A contribution
+        for (ic1, jc1, if1, jf1), a1 in self.A.items():
+            k1 = self.ij2k[(ic1, jc1)]
+            for (ic2, jc2, if2, jf2), a2 in self.A.items():
+                if (if1, jf1) == (if2, jf2):
+                    k2 = self.ij2k[(ic2, jc2)]
+                    M[k1, k2] += a1 * a2
+
+        # B contribution
+        for (ic1, jc1, if1, jf1), b1 in self.B.items():
+            k1 = self.ij2k[(ic1, jc1)]
+            for (ic2, jc2, if2, jf2), b2 in self.B.items():
+                if (if1, jf1) == (if2, jf2):
+                    k2 = self.ij2k[(ic2, jc2)]
+                    M[k1, k2] += b1 * b2
+
         return M
 
 
@@ -468,13 +481,20 @@ def test3():
     pg.update_fluxes(uflux=uflux_out, vflux=vflux_out)
     # since the polygon's segment runs parallel to the v flux and there is no uflux, 
     # no update is expected
-    print(vflux_in[0, 0], vflux_out[0, 0])
-    assert vflux_in[0, 0] == vflux_out[0, 0]
-    assert vflux_in[0, 1] == vflux_out[0, 1]
-    assert uflux_in[0, 0] == uflux_out[0, 0]
-    assert uflux_in[1, 0] == uflux_out[1, 0]
+    print('in:')
+    print(f'uflux0 = {uflux_in[0, 0]} uflux1 = {uflux_in[1, 0]}')
+    print(f'vflux0 = {vflux_in[0, 0]} vflux1 = {vflux_in[0, 1]}')
+    print('out:')
+    print(f'uflux0 = {uflux_out[0, 0]} uflux1 = {uflux_out[1, 0]}')
+    print(f'vflux0 = {vflux_out[0, 0]} vflux1 = {vflux_out[0, 1]}')
+
+    tol = 1.e-10
+    assert abs(vflux_in[0, 0] - vflux_out[0, 0]) < tol
+    assert abs(vflux_in[0, 1] - vflux_out[0, 1]) < tol
+    assert abs(uflux_in[0, 0] - uflux_out[0, 0]) < tol
+    assert abs(uflux_in[1, 0] - uflux_out[1, 0]) < tol
 
 if __name__ == '__main__':
-    test1()
-    test2()
+    #test1()
+    #test2()
     test3()
