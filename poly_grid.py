@@ -304,16 +304,21 @@ class PolyGrid:
         """
         self.A = {}
         self.B = {}
+
         # iterate over all the intersected cells
         for cell, segments in self.cell_segments.items():
             # cell indices
             i, j = cell
+
+            if not (0 <= i+1 <= self.Nx and 0 <= j+1 <= self.Ny):
+                continue  # segment outside the valid flux grid
+
             # iterate over the segments in the cell
             for seg in segments:
                 # get the start/end parametric coordinates of the subsegment
                 xsi0, eta0, xsi1, eta1 = seg
 
-                # use weights of Eq (10) in https://journals.ametsoc.org/view/journals/mwre/147/1/mwr-d-18-0146.1.xml
+                # use the weights of Eq (10) in https://journals.ametsoc.org/view/journals/mwre/147/1/mwr-d-18-0146.1.xml
                 dxsi, deta = xsi1 - xsi0, eta1 - eta0
                 axsi, aeta = 0.5*(xsi0 + xsi1), 0.5*(eta0 + eta1)
 
