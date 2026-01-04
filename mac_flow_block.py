@@ -38,6 +38,8 @@ j0, j1 = int(0.0*Ly/dy), int(0.6*Ly/dy)
 # the obstacle is aligned to the cells
 solid[i0:i1, j0:j1] = True
 
+umatrix, vmatrix = flux_poly_matrices(poly, Nx, Ny, dx, dy)
+
 # ============================================================
 # Utility functions
 # ============================================================
