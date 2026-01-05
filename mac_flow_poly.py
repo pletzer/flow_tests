@@ -2,7 +2,7 @@ import numpy as np
 import vtk
 from vtk.util import numpy_support
 from numba import njit, prange
-from poly_grid import is_inside_polygon, PolyGrid 
+from poly_grid import is_inside_polygon, PolyGrid
 
 # ============================================================
 # Parameters
@@ -11,7 +11,7 @@ Nx, Ny = 40, 20 # 100, 50 #40, 20
 Lx, Ly = 2.0, 1.0
 dx, dy = Lx / Nx, Ly / Ny
 
-dt = 0.002
+dt = 0.001 # 0.002
 nu = 0.01
 
 p_in  = 1.0     # inlet pressure
@@ -32,7 +32,7 @@ p = np.zeros((Nx, Ny))       # pressure (cells)
 # ============================================================
 # Obstacle represented as a polygon
 # ============================================================
-poly = [(0.3*Lx, 0.0*Ly), (0.5*Lx, 0.0*Ly), (0.5*Lx, 0.60*Ly), (0.31*Lx, 0.60*Ly)]
+poly = [(0.1*Lx, 0.2*Ly), (0.9*Lx, 0.2*Ly), (0.9*Lx, 0.6*Ly), (0.3*Lx, 0.6*Ly)]
 
 # poly_grid computes the intersection of an polygon with a grid
 poly_grid = PolyGrid(poly, Nx=Nx, Ny=Ny, dx=dx, dy=dy, debug=False, closed=True)
@@ -48,6 +48,16 @@ for j in range(Ny):
 # ============================================================
 # Utility functions
 # ============================================================
+def check_nans(arr, name):
+    invalid_mask = np.isnan(arr)
+    n = np.sum(invalid_mask)
+    if n > 0:
+        for i in range(arr.shape[0]):
+            for j in range(arr.shape[1]):
+                if invalid_mask[i, j]: 
+                    print(f'{i}, {j}')
+        raise RuntimeError(f'{name} has {n} nans')
+
 def cell_center_velocity(u, v):
     uc = 0.5 * (u[:-1, :] + u[1:, :])
     vc = 0.5 * (v[:, :-1] + v[:, 1:])
@@ -66,6 +76,9 @@ def apply_velocity_bc(u, v):
 
 
 def enforce_slip_obstacle(u, v, dx, dy, poly_grid):
+
+    check_nans(u, 'u')
+    check_nans(v, 'v')
 
     # fluxes from velocity field, taking into account the fact edges
     # intersected by the obstacle are only partially valid
