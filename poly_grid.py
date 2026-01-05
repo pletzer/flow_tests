@@ -1,5 +1,6 @@
 import numpy as np
 from collections import defaultdict
+import vtk
 
 """
 Flux conserving impermeability enforcement based on mimetic interpolation
@@ -455,6 +456,37 @@ class PolyGrid:
                            is_inside_polygon(self.poly, p1):
                             self.dyfrac[i + side, j] = 0.0
 
+
+    def save_polygon(self, filename="polygon.vtk"):
+        """
+        Saves polygon vertices within a vtkStructuredGrid. 
+        """
+        
+        num_points = len(self.poly)
+        # Define grid dimensions (must be >= num_points for simple mapping)
+        nx, ny, nz = num_points, 1, 1 
+        
+        # 1. Create a vtkStructuredGrid object and set its dimensions
+        s_grid = vtk.vtkStructuredGrid()
+        s_grid.SetDimensions(nx, ny, nz)
+        
+        # 2. Create a vtkPoints object to hold the grid coordinates
+        points = vtk.vtkPoints()
+        points.SetNumberOfPoints(nx * ny * nz)
+        
+        # 3. Insert the polygon vertices into the first points of the grid
+        for i, vert in enumerate(self.poly):
+            print(i, vert)
+            points.SetPoint(i, vert[0], vert[1], 0.0)
+
+        s_grid.SetPoints(points)
+        
+        # 4. Save the structured grid to a file
+        writer = vtk.vtkStructuredGridWriter()
+        writer.SetFileName(filename)
+        writer.SetInputData(s_grid)
+        writer.Write()
+        print(f"Structured Grid with points saved to {filename}")
 
 
     def check_polygon_coverage_length(self, tol=1e-10):

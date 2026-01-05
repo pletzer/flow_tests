@@ -11,13 +11,13 @@ Nx, Ny = 40, 20 # 100, 50 #40, 20
 Lx, Ly = 2.0, 1.0
 dx, dy = Lx / Nx, Ly / Ny
 
-dt = 0.001 # 0.002
+dt = 0.0005 # 0.002
 nu = 0.01
 
 p_in  = 1.0     # inlet pressure
 p_out = 0.0     # outlet pressure
 
-nsteps  = 1001
+nsteps  = 2001
 p_iters = 80
 vtk_stride = 100
 
@@ -32,10 +32,11 @@ p = np.zeros((Nx, Ny))       # pressure (cells)
 # ============================================================
 # Obstacle represented as a polygon
 # ============================================================
-poly = [(0.1*Lx, 0.2*Ly), (0.9*Lx, 0.2*Ly), (0.9*Lx, 0.6*Ly), (0.3*Lx, 0.6*Ly)]
+poly = [(0.1*Lx, 0.2*Ly), (0.6*Lx, 0.2*Ly), (0.6*Lx, 0.6*Ly), (0.3*Lx, 0.6*Ly)]
 
 # poly_grid computes the intersection of an polygon with a grid
 poly_grid = PolyGrid(poly, Nx=Nx, Ny=Ny, dx=dx, dy=dy, debug=False, closed=True)
+poly_grid.save_polygon(filename='obstacle.vtk')
 
 # set the cell-centred mask
 solid = np.zeros((Nx, Ny), dtype=bool)
