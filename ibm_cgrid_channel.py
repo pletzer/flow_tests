@@ -7,6 +7,50 @@ Author: (adapted for Alexander)
 """
 
 import numpy as np
+import vtk
+from vtk.util import numpy_support
+
+
+def write_vtr(fname, u, v, p, Lx, Ly):
+
+    Nx, Ny = p.shape
+
+    uc, vc = 0.5 * (u[:-1, :] + u[1:, :]), 0.5 * (v[:, :-1] + v[:, 1:])
+
+    grid = vtk.vtkRectilinearGrid()
+    grid.SetDimensions(Nx+1, Ny+1, 1)
+
+    x = np.linspace(0, Lx, Nx+1)
+    y = np.linspace(0, Ly, Ny+1)
+    z = np.array([0.0])
+
+    grid.SetXCoordinates(numpy_support.numpy_to_vtk(x))
+    grid.SetYCoordinates(numpy_support.numpy_to_vtk(y))
+    grid.SetZCoordinates(numpy_support.numpy_to_vtk(z))
+
+    # Pressure
+    p_vtk = numpy_support.numpy_to_vtk(
+        p.ravel(order="F"), deep=True
+    )
+    p_vtk.SetName("pressure")
+    grid.GetCellData().AddArray(p_vtk)
+
+    # Velocity
+    vel = np.zeros((Nx, Ny, 3))
+    vel[:, :, 0] = uc
+    vel[:, :, 1] = vc
+
+    vel_vtk = numpy_support.numpy_to_vtk(
+        vel.reshape(-1, 3, order="F"), deep=True
+    )
+    vel_vtk.SetName("velocity")
+    grid.GetCellData().AddArray(vel_vtk)
+
+    writer = vtk.vtkXMLRectilinearGridWriter()
+    writer.SetFileName(fname)
+    writer.SetInputData(grid)
+    writer.Write()
+
 
 
 # ============================================================
@@ -511,12 +555,12 @@ def run_channel_with_obstacle_inout():
     """
     # Domain & resolution
     Lx, Ly = 2.0, 1.0
-    Nx, Ny = 128, 64
+    Nx, Ny = 32, 16
     dx, dy = Lx / Nx, Ly / Ny
 
     # Fluid params
     rho = 1.0
-    nu  = 1e-3
+    nu  = 0.01
     fx  = 0.0  # set to small value if you prefer body-force driven flow
 
     # Time step (diffusive stability; adjust if advection dominates)
@@ -551,7 +595,7 @@ def run_channel_with_obstacle_inout():
     params = dict(nu=nu, rho=rho, dt=dt, dx=dx, dy=dy, fx=fx, alpha=50.0, Ly=Ly)
 
     nsteps = 1000
-    for n in range(nsteps):
+    for istep in range(nsteps):
         u, v, p = step(u, v, p, params, (chi_p, chi_u, chi_v), normals, uin_fun)
 
         # CFL monitor (advection); reduce dt if needed
@@ -560,13 +604,14 @@ def run_channel_with_obstacle_inout():
         cfl = max(umax * dt / dx, vmax * dt / dy)
         if cfl > 0.5:
             params["dt"] *= 0.5
-            print(f"[step {n}] CFL={cfl:.3f} -> dt={params['dt']:.3e}")
+            print(f"[step {istep}] CFL={cfl:.3f} -> dt={params['dt']:.3e}")
 
         # Diagnostics
-        if n % 100 == 0:
+        if istep % 10 == 0:
             kinE = 0.5 * (np.mean(u**2) + np.mean(v**2))
             div_norm = np.linalg.norm(divergence(u, v, dx, dy)) / (Nx * Ny)
-            print(f"step={n:4d}  KE={kinE:.3e}  divL2/N={div_norm:.3e}")
+            print(f"step={istep:4d}  KE={kinE:.6e}  divL2/N={div_norm:.3e}")
+            write_vtr(f'ibm_cgrid_channel_{istep:05d}.vtr', u, v, p, Lx, Ly)
 
     meta = dict(Lx=Lx, Ly=Ly, Nx=Nx, Ny=Ny, dx=dx, dy=dy)
     return u, v, p, (chi_p, chi_u, chi_v), normals, meta
