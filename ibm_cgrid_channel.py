@@ -1,5 +1,7 @@
 
 """
+Immersed Boundary Method (IBM)
+
 2D incompressible Navier-Stokes solver on an Arakawa C-grid
 Channel flow with inflow/outflow BCs, free-slip walls, and a polygonal immersed obstacle.
 
@@ -773,9 +775,14 @@ def run_channel_with_obstacle_inout():
         return U0 * np.ones_like(y)
 
     # Polygon obstacle (diamond)
-    cx, cy = 0.8, 0.5
-    w, h = 0.2, 0.25
-    poly = [(cx - w/2, cy), (cx, cy + h/2), (cx + w/2, cy), (cx, cy - h/2)]
+    cx, cy = 0.3, 0.0 # 0.5
+    w, h = 0.5, 0.3
+    # must be in anticlockwise direction TO CHECK!!!!!
+    #poly = [(cx - w/2, cy), (cx, cy + h/2), (cx + w/2, cy), ] # (cx, cy - h/2)]
+    poly = [(cx, cy), (cx + w, cy + h), (cx + w, cy), ] # (cx, cy - h/2)]
+    #poly = [(cx - w/2, cy), (cx + w/2, cy), (cx, cy + h)] # these don't work
+    #poly = [(cx - w/2, cy), (cx, cy + h), (cx + w/2, cy),]
+
 
     poly_grid = PolyGrid(poly, Nx=Nx, Ny=Ny, dx=dx, dy=dy, debug=False, closed=True)
 
