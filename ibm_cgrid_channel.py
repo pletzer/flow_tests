@@ -2,49 +2,89 @@
 """
 2D incompressible Navier-Stokes solver on an Arakawa C-grid
 Channel flow with inflow/outflow BCs, free-slip walls, and a polygonal immersed obstacle.
-Slip over the obstacle is enforced via normal-only penalization (Brinkman forcing).
-Author: (adapted for Alexander)
+
+Stability/enforcement:
+  - Red–Black Gauss–Seidel (RBGS) pressure solver (fast convergence).
+  - Clamp–Project–Clamp sequence for no-penetration (u·n=0) at obstacle boundary.
+  - Thin band of faces around polygon where the clamp is applied.
+  - Semi-implicit diffusion (Helmholtz solve via Jacobi).
+
+Performance:
+  - numba-accelerated stencil kernels for speed.
+  - small interpolation kernels are JIT (serial) to avoid nested parallel issues.
+
 """
 
 import numpy as np
+
+# VTK writer
 import vtk
 from vtk.util import numpy_support
+from poly_grid import is_inside_polygon, PolyGrid
 
 
-def write_vtr(fname, u, v, p, Lx, Ly):
+# -----------------------------
+# Optional Numba acceleration
+# -----------------------------
+try:
+    from numba import njit, prange
+    NUMBA_AVAILABLE = True
+except Exception:
+    NUMBA_AVAILABLE = False
+    # Fallback decorators: no-op
+    def njit(*args, **kwargs):
+        def wrapper(f): return f
+        return wrapper
+    def prange(*args):
+        return range(*args)
 
+# ============================================================
+# VTK writer (masked interior to avoid plotting inside obstacle)
+# ============================================================
+
+def write_vtr(fname, u, v, p, Lx, Ly, chi_p=None):
     Nx, Ny = p.shape
 
-    uc, vc = 0.5 * (u[:-1, :] + u[1:, :]), 0.5 * (v[:, :-1] + v[:, 1:])
+    # staggered -> cell centers
+    uc = 0.5 * (u[:-1, :] + u[1:, :])
+    vc = 0.5 * (v[:, :-1] + v[:, 1:])
+
+    # Mask interior cells so we don't visualize vectors/pressure inside the obstacle
+    if chi_p is not None:
+        mask = (1.0 - chi_p)  # 1=fluid, 0=solid
+        uc = uc * mask
+        vc = vc * mask
+        p  = p  * mask
 
     grid = vtk.vtkRectilinearGrid()
-    grid.SetDimensions(Nx+1, Ny+1, 1)
+    grid.SetDimensions(Nx + 1, Ny + 1, 1)
 
-    x = np.linspace(0, Lx, Nx+1)
-    y = np.linspace(0, Ly, Ny+1)
+    x = np.linspace(0, Lx, Nx + 1)
+    y = np.linspace(0, Ly, Ny + 1)
     z = np.array([0.0])
 
     grid.SetXCoordinates(numpy_support.numpy_to_vtk(x))
     grid.SetYCoordinates(numpy_support.numpy_to_vtk(y))
     grid.SetZCoordinates(numpy_support.numpy_to_vtk(z))
 
-    # Pressure
-    p_vtk = numpy_support.numpy_to_vtk(
-        p.ravel(order="F"), deep=True
-    )
+    # Pressure at cells
+    p_vtk = numpy_support.numpy_to_vtk(p.ravel(order="F"), deep=True)
     p_vtk.SetName("pressure")
     grid.GetCellData().AddArray(p_vtk)
 
-    # Velocity
+    # Velocity at cells
     vel = np.zeros((Nx, Ny, 3))
     vel[:, :, 0] = uc
     vel[:, :, 1] = vc
-
-    vel_vtk = numpy_support.numpy_to_vtk(
-        vel.reshape(-1, 3, order="F"), deep=True
-    )
+    vel_vtk = numpy_support.numpy_to_vtk(vel.reshape(-1, 3, order="F"), deep=True)
     vel_vtk.SetName("velocity")
     grid.GetCellData().AddArray(vel_vtk)
+
+    # Optional: fluid mask for visualization
+    if chi_p is not None:
+        mask_vtk = numpy_support.numpy_to_vtk((1.0 - chi_p).ravel(order="F"), deep=True)
+        mask_vtk.SetName("fluid_mask")
+        grid.GetCellData().AddArray(mask_vtk)
 
     writer = vtk.vtkXMLRectilinearGridWriter()
     writer.SetFileName(fname)
@@ -52,17 +92,11 @@ def write_vtr(fname, u, v, p, Lx, Ly):
     writer.Write()
 
 
-
 # ============================================================
 # Geometry & masking utilities
 # ============================================================
 
 def point_in_polygon(x, y, poly):
-    """
-    Ray-casting point-in-polygon test.
-    poly: list of (x,y) vertices (closed or open list is fine).
-    Returns True if (x,y) lies strictly inside polygon.
-    """
     inside = False
     n = len(poly)
     for i in range(n):
@@ -75,71 +109,56 @@ def point_in_polygon(x, y, poly):
                 inside = not inside
     return inside
 
-
 def build_masks(Lx, Ly, Nx, Ny, poly):
-    """
-    Build masks for p (cell centers), u (vertical faces), v (horizontal faces).
-    Returns chi_p, chi_u, chi_v with 1=solid, 0=fluid (useful for penalization).
-    """
-    dx = Lx / Nx
-    dy = Ly / Ny
+    dx, dy = Lx / Nx, Ly / Ny
 
-    # p centers at ((i+0.5)*dx, (j+0.5)*dy)
+    # p centers
     xc = (np.arange(Nx) + 0.5) * dx
     yc = (np.arange(Ny) + 0.5) * dy
-    Xc, Yc = np.meshgrid(xc, yc, indexing='ij')
     chi_p = np.zeros((Nx, Ny))
     for i in range(Nx):
         for j in range(Ny):
-            if point_in_polygon(Xc[i, j], Yc[i, j], poly):
+            if point_in_polygon(xc[i], yc[j], poly):
                 chi_p[i, j] = 1.0
 
-    # u faces at (i*dx, (j+0.5)*dy)
+    # u faces (i*dx, (j+0.5)*dy)
     xu = (np.arange(Nx + 1)) * dx
     yu = (np.arange(Ny) + 0.5) * dy
-    Xu, Yu = np.meshgrid(xu, yu, indexing='ij')
     chi_u = np.zeros((Nx + 1, Ny))
     for iu in range(Nx + 1):
         for j in range(Ny):
-            if point_in_polygon(Xu[iu, j], Yu[iu, j], poly):
+            if point_in_polygon(xu[iu], yu[j], poly):
                 chi_u[iu, j] = 1.0
 
-    # v faces at ((i+0.5)*dx, j*dy)
+    # v faces ((i+0.5)*dx, j*dy)
     xv = (np.arange(Nx) + 0.5) * dx
     yv = (np.arange(Ny + 1)) * dy
-    Xv, Yv = np.meshgrid(xv, yv, indexing='ij')
     chi_v = np.zeros((Nx, Ny + 1))
     for i in range(Nx):
         for jv in range(Ny + 1):
-            if point_in_polygon(Xv[i, jv], Yv[i, jv], poly):
+            if point_in_polygon(xv[i], yv[jv], poly):
                 chi_v[i, jv] = 1.0
 
     return chi_p, chi_u, chi_v
 
-
 def polygon_edges(poly):
-    """Return list of segments [(x0,y0,x1,y1), ...]."""
-    n = len(poly)
     segs = []
+    n = len(poly)
     for i in range(n):
         x0, y0 = poly[i]
         x1, y1 = poly[(i + 1) % n]
         segs.append((x0, y0, x1, y1))
     return segs
 
-
 def nearest_edge_normal(x, y, segs):
-    """
-    Return unit normal of nearest polygon edge and the distance.
-    Normal direction sign does not matter for penalization.
-    """
     best_d2 = 1e300
     nx, ny = 0.0, 0.0
     for (x0, y0, x1, y1) in segs:
         ex, ey = x1 - x0, y1 - y0
         L2 = ex*ex + ey*ey + 1e-16
         t = ((x - x0) * ex + (y - y0) * ey) / L2
-        t = max(0.0, min(1.0, t))
+        if t < 0.0: t = 0.0
+        if t > 1.0: t = 1.0
         xc = x0 + t * ex
         yc = y0 + t * ey
         dx, dy = x - xc, y - yc
@@ -147,20 +166,14 @@ def nearest_edge_normal(x, y, segs):
         if d2 < best_d2:
             best_d2 = d2
             nrm = np.sqrt(ex*ex + ey*ey) + 1e-16
-            nx, ny = ey / nrm, -ex / nrm  # a perpendicular unit normal
+            nx, ny = ey / nrm, -ex / nrm  # unit normal (sign arbitrary for slip)
     return nx, ny, np.sqrt(best_d2)
 
-
 def build_face_normals(Lx, Ly, Nx, Ny, poly):
-    """
-    Compute normals at u- and v-face locations against nearest polygon edge.
-    Returns (n_u_x, n_u_y), (n_v_x, n_v_y).
-    """
     segs = polygon_edges(poly)
-    dx = Lx / Nx
-    dy = Ly / Ny
+    dx, dy = Lx / Nx, Ly / Ny
 
-    # u faces at (i*dx, (j+0.5)*dy)
+    # u faces
     xu = (np.arange(Nx + 1)) * dx
     yu = (np.arange(Ny) + 0.5) * dy
     n_u_x = np.zeros((Nx + 1, Ny))
@@ -171,7 +184,7 @@ def build_face_normals(Lx, Ly, Nx, Ny, poly):
             n_u_x[iu, j] = nx
             n_u_y[iu, j] = ny
 
-    # v faces at ((i+0.5)*dx, j*dy)
+    # v faces
     xv = (np.arange(Nx) + 0.5) * dx
     yv = (np.arange(Ny + 1)) * dy
     n_v_x = np.zeros((Nx, Ny + 1))
@@ -184,439 +197,639 @@ def build_face_normals(Lx, Ly, Nx, Ny, poly):
 
     return (n_u_x, n_u_y), (n_v_x, n_v_y)
 
+# ---------- Thin band around polygon boundary (faces close to edges) ----------
+def build_face_band(Lx, Ly, Nx, Ny, poly, band_thickness):
+    segs = polygon_edges(poly)
+    dx, dy = Lx / Nx, Ly / Ny
+
+    # u faces
+    xu = (np.arange(Nx + 1)) * dx
+    yu = (np.arange(Ny) + 0.5) * dy
+    band_u = np.zeros((Nx + 1, Ny), dtype=np.bool_)
+    for iu in range(Nx + 1):
+        for j in range(Ny):
+            _, _, dist = nearest_edge_normal(xu[iu], yu[j], segs)
+            if dist <= band_thickness:
+                band_u[iu, j] = True
+
+    # v faces
+    xv = (np.arange(Nx) + 0.5) * dx
+    yv = (np.arange(Ny + 1)) * dy
+    band_v = np.zeros((Nx, Ny + 1), dtype=np.bool_)
+    for i in range(Nx):
+        for jv in range(Ny + 1):
+            _, _, dist = nearest_edge_normal(xv[i], yv[jv], segs)
+            if dist <= band_thickness:
+                band_v[i, jv] = True
+
+    return band_u, band_v
 
 # ============================================================
-# Staggered interpolations
+# Staggered interpolations (Numba JIT, serial to avoid nested parfors)
 # ============================================================
 
+@njit(cache=True, fastmath=True)
 def v_at_u_from_v(v):
-    """
-    Interpolate v (Nx, Ny+1) to u-face locations (Nx+1, Ny) using 4-point average.
-    """
     Nx = v.shape[0]
     Ny = v.shape[1] - 1
-    v_u = np.zeros((Nx + 1, Ny))
+    v_u = np.empty((Nx + 1, Ny), dtype=v.dtype)
     for iu in range(Nx + 1):
-        iL = (iu - 1) if iu > 0 else 0
-        iR = iu if iu < Nx else Nx - 1
+        iL = iu - 1
+        if iL < 0: iL = 0
+        iR = iu
+        if iR > Nx - 1: iR = Nx - 1
         for j in range(Ny):
             v_u[iu, j] = 0.25 * (v[iL, j] + v[iR, j] + v[iL, j+1] + v[iR, j+1])
     return v_u
 
-
+@njit(cache=True, fastmath=True)
 def u_at_v_from_u(u):
-    """
-    Interpolate u (Nx+1, Ny) to v-face locations (Nx, Ny+1) using 4-point average.
-    """
     Nx = u.shape[0] - 1
     Ny = u.shape[1]
-    u_v = np.zeros((Nx, Ny + 1))
+    u_v = np.empty((Nx, Ny + 1), dtype=u.dtype)
     for i in range(Nx):
         for jv in range(Ny + 1):
-            jD = max(jv - 1, 0)
-            jU = min(jv, Ny - 1)
+            jD = jv - 1
+            if jD < 0: jD = 0
+            jU = jv
+            if jU > Ny - 1: jU = Ny - 1
             u_v[i, jv] = 0.25 * (u[i, jD] + u[i+1, jD] + u[i, jU] + u[i+1, jU])
     return u_v
 
-
 # ============================================================
-# Differential operators (C-grid)
+# Differential operators (Numba)
 # ============================================================
 
+@njit(cache=True, fastmath=True, parallel=True)
 def divergence(u, v, dx, dy):
-    """
-    Div at p centers (Nx, Ny):
-    div = (u[i+1,j] - u[i,j]) / dx + (v[i,j+1] - v[i,j]) / dy
-    """
     Nx = u.shape[0] - 1
     Ny = u.shape[1]
-    div = np.zeros((Nx, Ny))
-    div += (u[1:, :] - u[:-1, :]) / dx
-    div += (v[:, 1:] - v[:, :-1]) / dy
+    div = np.empty((Nx, Ny))
+    for i in prange(Nx):
+        for j in range(Ny):
+            div[i, j] = (u[i+1, j] - u[i, j]) / dx + (v[i, j+1] - v[i, j]) / dy
     return div
 
-
+@njit(cache=True, fastmath=True, parallel=True)
 def grad_p_to_u(p, dx):
-    """
-    dp/dx at u faces: shape (Nx+1, Ny), Neumann at boundaries (gp[0]=gp[Nx]=0).
-    """
     Nx, Ny = p.shape
     gp = np.zeros((Nx + 1, Ny))
-    gp[1:Nx, :] = (p[1:, :] - p[:-1, :]) / dx
-    gp[0, :] = 0.0
-    gp[Nx, :] = 0.0
+    for j in prange(Ny):
+        for i in range(1, Nx):
+            gp[i, j] = (p[i, j] - p[i-1, j]) / dx
+        gp[0, j] = 0.0
+        gp[Nx, j] = 0.0
     return gp
 
-
+@njit(cache=True, fastmath=True, parallel=True)
 def grad_p_to_v(p, dy):
-    """
-    dp/dy at v faces: shape (Nx, Ny+1), Neumann at top/bottom (gp[:,0]=gp[:,Ny]=0).
-    """
     Nx, Ny = p.shape
     gp = np.zeros((Nx, Ny + 1))
-    gp[:, 1:Ny] = (p[:, 1:] - p[:, :-1]) / dy
-    gp[:, 0] = 0.0
-    gp[:, Ny] = 0.0
+    for i in prange(Nx):
+        gp[i, 0] = 0.0
+        for j in range(1, Ny):
+            gp[i, j] = (p[i, j] - p[i, j-1]) / dy
+        gp[i, Ny] = 0.0
     return gp
 
-
+@njit(cache=True, fastmath=True, parallel=True)
 def laplacian_u(u, dx, dy):
-    """
-    Laplacian for u at faces (Nx+1, Ny), Neumann in x and y via mirrored neighbors.
-    """
     Nx_p1, Ny = u.shape
     lap = np.zeros_like(u)
-
-    # x-direction (Neumann via mirror)
-    for iu in range(Nx_p1):
-        iuL = max(iu - 1, 0)
-        iuR = min(iu + 1, Nx_p1 - 1)
-        lap[iu, :] += (u[iuR, :] - 2.0*u[iu, :] + u[iuL, :]) / dx**2
-
-    # y-direction (Neumann via mirror)
-    for j in range(Ny):
-        jD = max(j - 1, 0)
-        jU = min(j + 1, Ny - 1)
-        lap[:, j] += (u[:, jU] - 2.0*u[:, j] + u[:, jD]) / dy**2
-
+    for iu in prange(Nx_p1):
+        iuL = iu - 1 if iu > 0 else 0
+        iuR = iu + 1 if iu < Nx_p1 - 1 else Nx_p1 - 1
+        for j in range(Ny):
+            jD = j - 1 if j > 0 else 0
+            jU = j + 1 if j < Ny - 1 else Ny - 1
+            lap[iu, j] = (u[iuR, j] - 2.0*u[iu, j] + u[iuL, j]) / dx**2 \
+                       + (u[iu, jU] - 2.0*u[iu, j] + u[iu, jD]) / dy**2
     return lap
 
-
+@njit(cache=True, fastmath=True, parallel=True)
 def laplacian_v(v, dx, dy):
-    """
-    Laplacian for v at faces (Nx, Ny+1), Neumann in x and y via mirrored neighbors.
-    """
     Nx, Ny_p1 = v.shape
     lap = np.zeros_like(v)
-
-    # x-direction (Neumann via mirror)
-    for i in range(Nx):
-        iL = max(i - 1, 0)
-        iR = min(i + 1, Nx - 1)
-        lap[i, :] += (v[iR, :] - 2.0*v[i, :] + v[iL, :]) / dx**2
-
-    # y-direction (Neumann via mirror)
-    for jv in range(Ny_p1):
-        jD = max(jv - 1, 0)
-        jU = min(jv + 1, Ny_p1 - 1)
-        lap[:, jv] += (v[:, jU] - 2.0*v[:, jv] + v[:, jD]) / dy**2
-
+    for i in prange(Nx):
+        iL = i - 1 if i > 0 else 0
+        iR = i + 1 if i < Nx - 1 else Nx - 1
+        for jv in range(Ny_p1):
+            jD = jv - 1 if jv > 0 else 0
+            jU = jv + 1 if jv < Ny_p1 - 1 else Ny_p1 - 1
+            lap[i, jv] = (v[iR, jv] - 2.0*v[i, jv] + v[iL, jv]) / dx**2 \
+                       + (v[i, jU] - 2.0*v[i, jv] + v[i, jD]) / dy**2
     return lap
 
-
 # ============================================================
-# Advection (donor-cell upwind)
+# Advection (donor-cell upwind, NumPy → Numba)
 # ============================================================
 
+@njit(cache=True, fastmath=True, parallel=True)
 def advect_u(u, v, dx, dy):
-    """
-    Compute -∂(u^2)/∂x - ∂(uv)/∂y at u faces (Nx+1, Ny).
-    Use central flux differences in x and upwind in y.
-    """
     Nx_p1, Ny = u.shape
     adv = np.zeros_like(u)
 
-    # d/dx (u^2)
-    Fx = u*u
-    for iu in range(Nx_p1):
-        iuL = max(iu - 1, 0)
-        iuR = min(iu + 1, Nx_p1 - 1)
-        adv[iu, :] -= (Fx[iuR, :] - Fx[iuL, :]) / (2.0*dx)
+    # x-flux donor-cell
+    for iu in prange(Nx_p1):
+        iuL = iu - 1 if iu > 0 else 0
+        iuR = iu + 1 if iu < Nx_p1 - 1 else Nx_p1 - 1
+        for j in range(Ny):
+            u_up = u[iuL, j] if u[iu, j] >= 0.0 else u[iuR, j]
+            F_i  = u[iu, j] * u_up
+            up_im = u[iuL, j] if u[iuL, j] >= 0.0 else u[iu, j]
+            F_im = u[iuL, j] * up_im
+            adv[iu, j] -= (F_i - F_im) / dx
 
-    # d/dy (u*v) with upwind in y using v at u locations
-    v_u = v_at_u_from_v(v)
-    uv = u * v_u
-    for j in range(Ny):
-        jD = max(j - 1, 0)
-        jU = min(j + 1, Ny - 1)
-        # upwind selector per-column
-        up = (v_u[:, j] >= 0.0)
-        down = ~up
-        adv[:, j] -= up  * (uv[:, j] - uv[:, jD]) / dy \
-                     + down * (uv[:, jU] - uv[:, j]) / dy
+    # y-flux donor-cell using v at u
+    v_u = v_at_u_from_v(v)  # serial JIT, safe to call
+    for iu in prange(Nx_p1):
+        for j in range(Ny):
+            jD = j - 1 if j > 0 else 0
+            jU = j + 1 if j < Ny - 1 else Ny - 1
+            uv_ij  = u[iu, j]  * v_u[iu, j]
+            uv_up  = u[iu, jU] * v_u[iu, jU]
+            uv_dn  = u[iu, jD] * v_u[iu, jD]
+            if v_u[iu, j] >= 0.0:
+                adv[iu, j] -= (uv_ij - uv_dn) / dy
+            else:
+                adv[iu, j] -= (uv_up - uv_ij) / dy
 
     return adv
 
-
+@njit(cache=True, fastmath=True, parallel=True)
 def advect_v(u, v, dx, dy):
-    """
-    Compute -∂(uv)/∂x - ∂(v^2)/∂y at v faces (Nx, Ny+1).
-    Use upwind in x and central in y.
-    """
     Nx, Ny_p1 = v.shape
     adv = np.zeros_like(v)
 
-    # d/dx (u*v) with upwind in x using u at v locations
-    u_v = u_at_v_from_u(u)
-    uv = u_v * v
-    for i in range(Nx):
-        iL = max(i - 1, 0)
-        iR = min(i + 1, Nx - 1)
-        up = (u_v[i, :] >= 0.0)
-        down = ~up
-        adv[i, :] -= up  * (uv[i, :] - uv[iL, :]) / dx \
-                     + down * (uv[iR, :] - uv[i, :]) / dx
+    # x-flux donor-cell using u at v
+    u_v = u_at_v_from_u(u)  # serial JIT
+    for i in prange(Nx):
+        iL = i - 1 if i > 0 else 0
+        iR = i + 1 if i < Nx - 1 else Nx - 1
+        for jv in range(Ny_p1):
+            uv_ij = u_v[i, jv] * v[i, jv]
+            if u_v[i, jv] >= 0.0:
+                uv_im = u_v[iL, jv] * v[iL, jv]
+                adv[i, jv] -= (uv_ij - uv_im) / dx
+            else:
+                uv_ip = u_v[iR, jv] * v[iR, jv]
+                adv[i, jv] -= (uv_ip - uv_ij) / dx
 
-    # d/dy (v^2) central
-    Fy = v*v
-    for jv in range(Ny_p1):
-        jD = max(jv - 1, 0)
-        jU = min(jv + 1, Ny_p1 - 1)
-        adv[:, jv] -= (Fy[:, jU] - Fy[:, jD]) / (2.0*dy)
-
+    # y-flux donor-cell (v^2)
+    for i in prange(Nx):
+        for jv in range(Ny_p1):
+            jD = jv - 1 if jv > 0 else 0
+            jU = jv + 1 if jv < Ny_p1 - 1 else Ny_p1 - 1
+            v_up = v[i, jD] if v[i, jv] >= 0.0 else v[i, jU]
+            K_j  = v[i, jv] * v_up
+            v_upm = v[i, jD] if v[i, jD] >= 0.0 else v[i, jv]
+            K_jm = v[i, jD] * v_upm
+            adv[i, jv] -= (K_j - K_jm) / dy
     return adv
 
-
 # ============================================================
-# IBM: normal-only penalization (slip on obstacle)
-# ============================================================
-
-def normal_only_penalty_on_u(u_face, v_interp, n_x, n_y, alpha, chi_u):
-    """Penalize normal component at u faces."""
-    proj_n = u_face * n_x + v_interp * n_y
-    return -alpha * chi_u * (proj_n * n_x)
-
-def normal_only_penalty_on_v(v_face, u_interp, n_x, n_y, alpha, chi_v):
-    """Penalize normal component at v faces."""
-    proj_n = u_interp * n_x + v_face * n_y
-    return -alpha * chi_v * (proj_n * n_y)
-
-
-# ============================================================
-# Pressure Poisson (SOR, all-Neumann; fix mean to 0)
+# Helmholtz (semi-implicit diffusion) via Jacobi (Numba)
 # ============================================================
 
-def poisson_pressure(rhs, chi_p, dx, dy, omega=1.7, max_iter=2000, tol=1e-6):
-    """
-    Solve ∇²p = rhs on fluid cells (chi_p=0), Neumann on all boundaries (x & y).
-    Skip solids (chi_p=1). We remove the nullspace by subtracting the mean after solve.
-    """
+@njit(cache=True, fastmath=True, parallel=True)
+def helmholtz_u(u_rhs, dt, nu, dx, dy, iters):
+    Nx_p1, Ny = u_rhs.shape
+    u = u_rhs.copy()
+    coef = 1.0 + 2.0 * dt * nu * (1.0/dx**2 + 1.0/dy**2)
+    for _ in range(iters):
+        u_new = np.empty_like(u)
+        for iu in prange(Nx_p1):
+            iuL = iu - 1 if iu > 0 else 0
+            iuR = iu + 1 if iu < Nx_p1 - 1 else Nx_p1 - 1
+            for j in range(Ny):
+                jD = j - 1 if j > 0 else 0
+                jU = j + 1 if j < Ny - 1 else Ny - 1
+                u_new[iu, j] = (u_rhs[iu, j] +
+                                dt * nu * ((u[iuL, j] + u[iuR, j]) / dx**2 +
+                                           (u[iu, jD] + u[iu, jU]) / dy**2)) / coef
+        u = u_new
+    return u
+
+@njit(cache=True, fastmath=True, parallel=True)
+def helmholtz_v(v_rhs, dt, nu, dx, dy, iters):
+    Nx, Ny_p1 = v_rhs.shape
+    v = v_rhs.copy()
+    coef = 1.0 + 2.0 * dt * nu * (1.0/dx**2 + 1.0/dy**2)
+    for _ in range(iters):
+        v_new = np.empty_like(v)
+        for i in prange(Nx):
+            iL = i - 1 if i > 0 else 0
+            iR = i + 1 if i < Nx - 1 else Nx - 1
+            for jv in range(Ny_p1):
+                jD = jv - 1 if jv > 0 else 0
+                jU = jv + 1 if jv < Ny_p1 - 1 else Ny_p1 - 1
+                v_new[i, jv] = (v_rhs[i, jv] +
+                                dt * nu * ((v[iL, jv] + v[iR, jv]) / dx**2 +
+                                           (v[i, jD] + v[i, jU]) / dy**2)) / coef
+        v = v_new
+    return v
+
+# ============================================================
+# IBM: implicit normal-only penalization inside obstacle
+# ============================================================
+
+@njit(cache=True, fastmath=True, parallel=True)
+def implicit_penalize_u(u_star, v_on_u, n_x, n_y, alpha_dt, chi_u):
+    Nx_p1, Ny = u_star.shape
+    out = u_star.copy()
+    for iu in prange(Nx_p1):
+        for j in range(Ny):
+            proj_n    = u_star[iu, j] * n_x[iu, j] + v_on_u[iu, j] * n_y[iu, j]
+            damp      = 1.0 / (1.0 + alpha_dt * chi_u[iu, j])
+            proj_new  = proj_n * damp
+            delta_un  = (proj_new - proj_n) * n_x[iu, j]
+            out[iu, j] = u_star[iu, j] + delta_un
+    return out
+
+@njit(cache=True, fastmath=True, parallel=True)
+def implicit_penalize_v(v_star, u_on_v, n_x, n_y, alpha_dt, chi_v):
+    Nx, Ny_p1 = v_star.shape
+    out = v_star.copy()
+    for i in prange(Nx):
+        for jv in range(Ny_p1):
+            proj_n    = u_on_v[i, jv] * n_x[i, jv] + v_star[i, jv] * n_y[i, jv]
+            damp      = 1.0 / (1.0 + alpha_dt * chi_v[i, jv])
+            proj_new  = proj_n * damp
+            delta_vn  = (proj_new - proj_n) * n_y[i, jv]
+            out[i, jv] = v_star[i, jv] + delta_vn
+    return out
+
+# ---------- Explicit no-penetration clamp in band ----------
+@njit(cache=True, fastmath=True)
+def enforce_no_penetration_u(u, v_on_u, n_x, n_y, band_u):
+    Nx_p1, Ny = u.shape
+    for iu in range(Nx_p1):
+        for j in range(Ny):
+            if band_u[iu, j]:
+                vn = u[iu, j] * n_x[iu, j] + v_on_u[iu, j] * n_y[iu, j]
+                u[iu, j] -= vn * n_x[iu, j]
+    return u
+
+@njit(cache=True, fastmath=True)
+def enforce_no_penetration_v(v, u_on_v, n_x, n_y, band_v):
+    Nx, Ny_p1 = v.shape
+    for i in range(Nx):
+        for jv in range(Ny_p1):
+            if band_v[i, jv]:
+                vn = u_on_v[i, jv] * n_x[i, jv] + v[i, jv] * n_y[i, jv]
+                v[i, jv] -= vn * n_y[i, jv]
+    return v
+
+#@reject_nans
+def enforce_slip_obstacle(u, v, dx, dy, poly_grid):
+
+    # fluxes from velocity field, taking into account the fact that edges
+    # intersected by the obstacle are only partially valid
+    uflux = u * poly_grid.dyfrac * dy
+    vflux = v * poly_grid.dxfrac * dx
+
+    poly_grid.update_fluxes(uflux=uflux, vflux=vflux)
+
+    # back to velocity
+    tol = 1.e-8 # need to avoid leakeage
+
+    for i in range(u.shape[0]):
+        for j in range(u.shape[1]):
+            if poly_grid.dyfrac[i, j] > 1.e-3:
+                u[i, j] = uflux[i, j] / (poly_grid.dyfrac[i, j] * dy)
+            else:
+                u[i, j] = 0.0
+    #u = np.where(poly_grid.dyfrac * dy > tol, uflux / (poly_grid.dyfrac * dy), 0.0)
+
+    for i in range(v.shape[0]):
+        for j in range(v.shape[1]):
+            if poly_grid.dxfrac[i, j] > 1.e-3:
+                v[i, j] = vflux[i, j] / (poly_grid.dxfrac[i, j] * dx)
+            else:
+                v[i, j] = 0.0
+    #v = np.where(poly_grid.dxfrac * dx > tol, vflux / (poly_grid.dxfrac * dx), 0.0)
+
+    return u, v
+
+
+# ============================================================
+# Pressure Poisson: Red–Black Gauss–Seidel (RBGS)
+# ============================================================
+
+@njit(cache=True, fastmath=True)
+def poisson_pressure_rbgs(rhs, chi_p, dx, dy, max_iter=5000, tol=1e-8):
     Nx, Ny = rhs.shape
     p = np.zeros_like(rhs)
-    inv = 1.0 / (2.0*(dx*dx + dy*dy))
+    cdx2 = dx*dx
+    cdy2 = dy*dy
+    denom = 2.0 * (cdx2 + cdy2)
+
     for it in range(max_iter):
         max_res = 0.0
+
+        # RED pass (i+j even)
         for i in range(Nx):
-            iL = max(i - 1, 0)
-            iR = min(i + 1, Nx - 1)
+            iL = i - 1 if i > 0 else 0
+            iR = i + 1 if i < Nx - 1 else Nx - 1
             for j in range(Ny):
+                if ((i + j) & 1) != 0:  # not red
+                    continue
                 if chi_p[i, j] > 0.5:
                     continue
-                jD = max(j - 1, 0)
-                jU = min(j + 1, Ny - 1)
-                p_new = ((p[iR, j] + p[iL, j]) * dy*dy +
-                         (p[i, jU] + p[i, jD]) * dx*dx -
-                         rhs[i, j] * dx*dx * dy*dy) * inv
-                res = abs(p_new - p[i, j])
-                if res > max_res:
-                    max_res = res
-                p[i, j] = (1 - omega) * p[i, j] + omega * p_new
+                jD = j - 1 if j > 0 else 0
+                jU = j + 1 if j < Ny - 1 else Ny - 1
+
+                p_new = ((p[iR, j] + p[iL, j]) * cdy2 +
+                         (p[i, jU] + p[i, jD]) * cdx2 -
+                         rhs[i, j] * cdx2 * cdy2) / denom
+                r = abs(p_new - p[i, j])
+                if r > max_res:
+                    max_res = r
+                p[i, j] = p_new
+
+        # BLACK pass (i+j odd)
+        for i in range(Nx):
+            iL = i - 1 if i > 0 else 0
+            iR = i + 1 if i < Nx - 1 else Nx - 1
+            for j in range(Ny):
+                if ((i + j) & 1) == 0:  # not black
+                    continue
+                if chi_p[i, j] > 0.5:
+                    continue
+                jD = j - 1 if j > 0 else 0
+                jU = j + 1 if j < Ny - 1 else Ny - 1
+
+                p_new = ((p[iR, j] + p[iL, j]) * cdy2 +
+                         (p[i, jU] + p[i, jD]) * cdx2 -
+                         rhs[i, j] * cdx2 * cdy2) / denom
+                r = abs(p_new - p[i, j])
+                if r > max_res:
+                    max_res = r
+                p[i, j] = p_new
+
         if max_res < tol:
             break
-    # remove nullspace (mean pressure)
-    fluid_mask = (1.0 - chi_p)
-    m = fluid_mask.sum()
-    if m > 0:
-        p_mean = (p * fluid_mask).sum() / m
-        p -= p_mean
+
+    # Remove mean pressure (anchor)
+    sum_p = 0.0
+    cnt   = 0
+    for i in range(Nx):
+        for j in range(Ny):
+            if chi_p[i, j] < 0.5:
+                sum_p += p[i, j]
+                cnt += 1
+    if cnt > 0:
+        p_mean = sum_p / cnt
+        for i in range(Nx):
+            for j in range(Ny):
+                p[i, j] -= p_mean
+
     return p
 
-
 # ============================================================
-# Boundary Conditions (inflow/outflow & free-slip walls)
+# Boundary Conditions (Python helpers)
 # ============================================================
 
 def apply_wall_slip(u, v):
-    """
-    Free-slip at y=0,Ly:
-    v = 0 (no penetration), du/dy = 0 (copy from interior).
-    """
-    # v at walls
-    v[:, 0] = 0.0
+    # Free-slip walls: v = 0 (no-penetration), du/dy = 0 (mirror)
+    v[:, 0]  = 0.0
     v[:, -1] = 0.0
-    # u tangential slip: zero normal derivative -> mirror
-    u[:, 0] = u[:, 1]
+    u[:, 0]  = u[:, 1]
     u[:, -1] = u[:, -2]
 
-
 def apply_inflow(u, v, uin_fun, Ly, Ny):
-    """
-    Inflow at x=0 for u (iu=0) set to uin(y). v(i=0,:) = 0.
-    uin_fun should accept array of y positions at u-face y locations (mid-cell).
-    """
-    y_u = (np.arange(Ny) + 0.5) * (Ly / Ny)  # u faces y at (j+0.5)*dy
+    y_u = (np.arange(Ny) + 0.5) * (Ly / Ny)
     u[0, :] = uin_fun(y_u)
-    v[0, :] = 0.0  # v at i=0 faces (includes j=0..Ny); no penetration at inflow
+    v[0, :] = 0.0
 
+def apply_outflow(u, v, uin_fun, Ly, Ny):
+    y_u = (np.arange(Ny) + 0.5) * (Ly / Ny)
+    u[-1, :] = uin_fun(y_u)
+    v[-1, :] = 0.0
 
-def apply_outflow_neumann(u, v):
+def apply_outflow_convective(u, v, dt, dx, u_out):
     """
-    Outflow at x=Lx: zero-gradient (Neumann).
-    u(iu=Nx,:) = u(iu=Nx-1,:)
-    v(i=Nx-1,:) = v(i=Nx-2,:)
+    Convective outlet:
+    φ_N = φ_{N-1} - (dt*U_out/dx) (φ_{N-1} - φ_{N-2})
     """
-    Nx_p1, Ny = u.shape
+    Nx_p1, _ = u.shape
     Nx = Nx_p1 - 1
-    u[Nx, :] = u[Nx - 1, :]
-    v[Nx - 1, :] = v[Nx - 2, :]
-
+    if Nx_p1 >= 3:
+        u[Nx, :] = u[Nx - 1, :] - (dt * u_out / dx) * (u[Nx - 1, :] - u[Nx - 2, :])
+    Nx_v, _ = v.shape
+    if Nx_v >= 3:
+        v[Nx_v - 1, :] = v[Nx_v - 2, :] - (dt * u_out / dx) * (v[Nx_v - 2, :] - v[Nx_v - 3, :])
 
 # ============================================================
-# Time step
+# Adaptive time step (Python)
 # ============================================================
 
-def step(u, v, p, params, masks, normals, uin_fun):
-    """
-    One time-step with:
-    - free-slip walls,
-    - inflow at x=0 (uin_fun),
-    - outflow (Neumann) at x=Lx,
-    - normal-only IBM penalization for obstacle.
-    """
+def pick_dt(u, v, dx, dy, nu, cfl_target=0.4, diff_safety=0.3, dt_floor=1e-6, dt_ceiling=0.5):
+    umax = max(float(np.max(np.abs(u))), 1e-12)
+    vmax = max(float(np.max(np.abs(v))), 1e-12)
+    dt_adv  = cfl_target * min(dx / umax, dy / vmax)
+    dt_diff = diff_safety * min(dx*dx, dy*dy) / max(nu, 1e-12)
+    return max(dt_floor, min(dt_adv, dt_diff, dt_ceiling))
+
+# ============================================================
+# Monitoring: max |u·n| in the band
+# ============================================================
+
+def max_normal_penetration(u, v, n_u_x, n_u_y, n_v_x, n_v_y, band_u, band_v):
+    v_on_u = v_at_u_from_v(v)
+    u_on_v = u_at_v_from_u(u)
+    vn_u = np.abs(u * n_u_x + v_on_u * n_u_y)
+    vn_v = np.abs(u_on_v * n_v_x + v * n_v_y)
+    mnu = np.max(vn_u[band_u]) if np.any(band_u) else 0.0
+    mnv = np.max(vn_v[band_v]) if np.any(band_v) else 0.0
+    return float(mnu), float(mnv)
+
+# ============================================================
+# One time step (Python orchestration calling numba kernels)
+# ============================================================
+
+def step(u, v, p, params, masks, normals, bands, uin_fun, poly_grid):
     nu   = params["nu"]
     rho  = params["rho"]
-    dt   = params["dt"]
     dx   = params["dx"]
     dy   = params["dy"]
     fx   = params.get("fx", 0.0)
-    alpha = params.get("alpha", 50.0)
+    alpha= params.get("alpha", 50.0)
     Ly   = params["Ly"]
     Ny   = u.shape[1]
 
+    # Adaptive dt
+    dt = pick_dt(u, v, dx, dy, nu,
+                 cfl_target=params.get("cfl_target", 0.4),
+                 diff_safety=params.get("diff_safety", 0.3),
+                 dt_floor=params.get("dt_floor", 1e-6),
+                 dt_ceiling=params.get("dt_ceiling", 0.5))
+    params["dt"] = dt
+
     chi_p, chi_u, chi_v = masks
     (n_u_x, n_u_y), (n_v_x, n_v_y) = normals
+    band_u, band_v = bands
 
-    # --- Enforce BCs BEFORE operators ---
+    # BCs before operators
     apply_wall_slip(u, v)
     apply_inflow(u, v, uin_fun, Ly, Ny)
-    apply_outflow_neumann(u, v)
+    # u_out = float(np.mean(u[-2, :])) if u.shape[0] > 2 else 0.0
+    # apply_outflow_convective(u, v, dt, dx, u_out)
+    apply_outflow(u, v, uin_fun, Ly, Ny)
 
-    # --- Advection (upwind) ---
+    # Advection
     adv_u = advect_u(u, v, dx, dy)
     adv_v = advect_v(u, v, dx, dy)
 
-    # --- Diffusion ---
-    lap_u = laplacian_u(u, dx, dy)
-    lap_v = laplacian_v(v, dx, dy)
-
-    # --- Body force (drive x) ---
+    # Explicit non-diffusive RHS
     f_u = fx * np.ones_like(u)
-    f_v = np.zeros_like(v)
+    rhs_u = u + dt * (-adv_u + f_u)
+    rhs_v = v + dt * (-adv_v)
 
-    # --- IBM: penalize ONLY normal component inside obstacle ---
-    v_on_u = v_at_u_from_v(v)
-    u_on_v = u_at_v_from_u(u)
-    pen_u = normal_only_penalty_on_u(u, v_on_u, n_u_x, n_u_y, alpha, chi_u)
-    pen_v = normal_only_penalty_on_v(v, u_on_v, n_v_x, n_v_y, alpha, chi_v)
+    # Semi-implicit diffusion
+    u_star = helmholtz_u(rhs_u, dt, nu, dx, dy, iters=params.get("helmholtz_iters", 60))
+    v_star = helmholtz_v(rhs_v, dt, nu, dx, dy, iters=params.get("helmholtz_iters", 60))
 
-    # --- Intermediate velocities (no pressure) ---
-    u_star = u + dt * ( -adv_u + nu * lap_u + f_u + pen_u )
-    v_star = v + dt * ( -adv_v + nu * lap_v + f_v + pen_v )
+    # Implicit IBM (normal-only) inside solid
+    v_on_u = v_at_u_from_v(v_star)
+    u_on_v = u_at_v_from_u(u_star)
+    alpha_dt = alpha * dt
+    u_star = implicit_penalize_u(u_star, v_on_u, n_u_x, n_u_y, alpha_dt, chi_u)
+    v_star = implicit_penalize_v(v_star, u_on_v, n_v_x, n_v_y, alpha_dt, chi_v)
 
-    # Re-enforce BCs on intermediates (important for stability)
+    # Re-enforce BCs
     apply_wall_slip(u_star, v_star)
     apply_inflow(u_star, v_star, uin_fun, Ly, Ny)
-    apply_outflow_neumann(u_star, v_star)
+    # u_out = float(np.mean(u_star[-2, :])) if u_star.shape[0] > 2 else 0.0
+    # apply_outflow_convective(u_star, v_star, dt, dx, u_out)
+    apply_outflow(u_star, v_star, uin_fun, Ly, Ny)
 
-    # --- Poisson RHS ---
+    # First projection (RBGS)
     div_star = divergence(u_star, v_star, dx, dy)
-    rhs = (rho / dt) * (div_star * (1.0 - chi_p))  # zero RHS in solid
+    rhs = (rho / dt) * (div_star * (1.0 - chi_p))
+    p_new = poisson_pressure_rbgs(rhs, chi_p, dx, dy, max_iter=5000, tol=1e-8)
 
-    # --- Pressure solve (Neumann all boundaries) ---
-    p_new = poisson_pressure(rhs, chi_p, dx, dy)
-
-    # --- Pressure correction ---
     dpdx_u = grad_p_to_u(p_new, dx)
     dpdy_v = grad_p_to_v(p_new, dy)
-
     u_next = u_star - dt / rho * dpdx_u
     v_next = v_star - dt / rho * dpdy_v
 
-    # --- Mask obstacle (robustness) ---
+    # Clamp–Project–Clamp loop
+    n_ib_iter = params.get("n_ib_iter", 2)
+    for _ in range(n_ib_iter):
+        # clamp u·n=0 in band
+        v_on_u_corr = v_at_u_from_v(v_next)
+        u_on_v_corr = u_at_v_from_u(u_next)
+        # u_next = enforce_no_penetration_u(u_next, v_on_u_corr, n_u_x, n_u_y, band_u)
+        # v_next = enforce_no_penetration_v(v_next, u_on_v_corr, n_v_x, n_v_y, band_v)
+        u_next, v_next = enforce_slip_obstacle(u_next, v_next, dx, dy, poly_grid)
+
+        # re-project (RBGS)
+        div_fix = divergence(u_next, v_next, dx, dy)
+        rhs_fix = (rho / dt) * (div_fix * (1.0 - chi_p))
+        p_fix = poisson_pressure_rbgs(rhs_fix, chi_p, dx, dy, max_iter=3000, tol=1e-8)
+        u_next = u_next - dt / rho * grad_p_to_u(p_fix, dx)
+        v_next = v_next - dt / rho * grad_p_to_v(p_fix, dy)
+
+    # Final clamp so last operation preserves no-penetration
+    v_on_u_corr = v_at_u_from_v(v_next)
+    u_on_v_corr = u_at_v_from_u(u_next)
+    # u_next = enforce_no_penetration_u(u_next, v_on_u_corr, n_u_x, n_u_y, band_u)
+    # v_next = enforce_no_penetration_v(v_next, u_on_v_corr, n_v_x, n_v_y, band_v)
+    u_next, v_next = enforce_slip_obstacle(u_next, v_next, dx, dy, poly_grid)
+
+
+    # Mask obstacle interior (robustness)
     u_next *= (1.0 - chi_u)
     v_next *= (1.0 - chi_v)
 
-    # --- Final BCs ---
+    # Final BCs
     apply_wall_slip(u_next, v_next)
     apply_inflow(u_next, v_next, uin_fun, Ly, Ny)
-    apply_outflow_neumann(u_next, v_next)
+    # u_out = float(np.mean(u_next[-2, :])) if u_next.shape[0] > 2 else 0.0
+    # apply_outflow_convective(u_next, v_next, dt, dx, u_out)
+    apply_outflow(u_next, v_next, uin_fun, Ly, Ny)
 
     return u_next, v_next, p_new
-
 
 # ============================================================
 # Driver / example
 # ============================================================
 
 def run_channel_with_obstacle_inout():
-    """
-    Run a demonstration: inflow/outflow with free-slip walls and slip over obstacle.
-    Returns final fields and metadata.
-    """
     # Domain & resolution
     Lx, Ly = 2.0, 1.0
-    Nx, Ny = 32, 16
+    Nx, Ny = 64, 32
     dx, dy = Lx / Nx, Ly / Ny
 
     # Fluid params
     rho = 1.0
     nu  = 0.01
-    fx  = 0.0  # set to small value if you prefer body-force driven flow
+    fx  = 0.0
 
-    # Time step (diffusive stability; adjust if advection dominates)
-    dt  = 0.25 * min(dx, dy)**2 / max(nu, 1e-9)
-
-    # Inflow profile: e.g., uniform or mild parabolic (slip walls so uniform is fine)
+    # Inflow profile (uniform)
     def uin_fun(y):
-        U0 = 0.5  # inflow magnitude
+        U0 = 0.3
         return U0 * np.ones_like(y)
-        # For a parabolic profile (Poiseuille-like):
-        # return 4*U0*(y*(Ly - y))/Ly**2
 
-    # Polygon obstacle (example: diamond centered in channel)
+    # Polygon obstacle (diamond)
     cx, cy = 0.8, 0.5
     w, h = 0.2, 0.25
-    poly = [
-        (cx - w/2, cy),
-        (cx, cy + h/2),
-        (cx + w/2, cy),
-        (cx, cy - h/2)
-    ]
+    poly = [(cx - w/2, cy), (cx, cy + h/2), (cx + w/2, cy), (cx, cy - h/2)]
 
-    # Masks and normals
+    poly_grid = PolyGrid(poly, Nx=Nx, Ny=Ny, dx=dx, dy=dy, debug=False, closed=True)
+
+    # Masks & normals
     chi_p, chi_u, chi_v = build_masks(Lx, Ly, Nx, Ny, poly)
     normals = build_face_normals(Lx, Ly, Nx, Ny, poly)
+
+    # Thin band around obstacle (wider band helps at corners)
+    band_thickness = 1.0 * min(dx, dy)
+    band_u, band_v = build_face_band(Lx, Ly, Nx, Ny, poly, band_thickness)
 
     # Fields
     u = np.zeros((Nx + 1, Ny))
     v = np.zeros((Nx, Ny + 1))
     p = np.zeros((Nx, Ny))
 
-    params = dict(nu=nu, rho=rho, dt=dt, dx=dx, dy=dy, fx=fx, alpha=50.0, Ly=Ly)
+    params = dict(
+        nu=nu, rho=rho, dx=dx, dy=dy, fx=fx, alpha=50.0, Ly=Ly,
+        cfl_target=0.4, diff_safety=0.3, dt_floor=1e-6, dt_ceiling=0.5,
+        helmholtz_iters=60,
+        n_ib_iter=2
+    )
 
     nsteps = 1000
     for istep in range(nsteps):
-        u, v, p = step(u, v, p, params, (chi_p, chi_u, chi_v), normals, uin_fun)
+        u, v, p = step(u, v, p, params,
+                       (chi_p, chi_u, chi_v),
+                       normals,
+                       (band_u, band_v),
+                       uin_fun, 
+                       poly_grid)
 
-        # CFL monitor (advection); reduce dt if needed
-        umax = max(np.max(np.abs(u)), 1e-12)
-        vmax = max(np.max(np.abs(v)), 1e-12)
+        dt = params["dt"]
+        umax = max(float(np.max(np.abs(u))), 1e-12)
+        vmax = max(float(np.max(np.abs(v))), 1e-12)
         cfl = max(umax * dt / dx, vmax * dt / dy)
-        if cfl > 0.5:
-            params["dt"] *= 0.5
-            print(f"[step {istep}] CFL={cfl:.3f} -> dt={params['dt']:.3e}")
 
-        # Diagnostics
         if istep % 10 == 0:
             kinE = 0.5 * (np.mean(u**2) + np.mean(v**2))
             div_norm = np.linalg.norm(divergence(u, v, dx, dy)) / (Nx * Ny)
-            print(f"step={istep:4d}  KE={kinE:.6e}  divL2/N={div_norm:.3e}")
-            write_vtr(f'ibm_cgrid_channel_{istep:05d}.vtr', u, v, p, Lx, Ly)
+            mnu, mnv = max_normal_penetration(u, v,
+                                              normals[0][0], normals[0][1],
+                                              normals[1][0], normals[1][1],
+                                              band_u, band_v)
+            print(f"step={istep:4d} dt={dt:.3e} CFL={cfl:.3f} KE={kinE:.6e} "
+                  f"divL2/N={div_norm:.3e}  max|u·n|_band: u={mnu:.3e}, v={mnv:.3e}")
+
+            write_vtr(f'ibm_cgrid_channel_{istep:05d}.vtr', u, v, p, Lx, Ly, chi_p)
 
     meta = dict(Lx=Lx, Ly=Ly, Nx=Nx, Ny=Ny, dx=dx, dy=dy)
-    return u, v, p, (chi_p, chi_u, chi_v), normals, meta
+    return u, v, p, (chi_p, chi_u, chi_v), normals, (band_u, band_v), meta
 
 
 if __name__ == "__main__":
-    u, v, p, masks, normals, meta = run_channel_with_obstacle_inout()
+    print(f"Numba available: {NUMBA_AVAILABLE}")
+    u, v, p, masks, normals, bands, meta = run_channel_with_obstacle_inout()
     print("Simulation finished.")
