@@ -41,12 +41,34 @@ except Exception:
         return wrapper
     def prange(*args):
         return range(*args)
+    
+def write_poly(fname, poly):
+
+    n = len(poly)
+    n1 = n + 1
+
+    p = vtk.vtkPoints()
+    g = vtk.vtkStructuredGrid()
+    g.SetDimensions(n1, 1, 1)
+    g.SetPoints(p)
+
+    for pt in poly:
+        p.InsertNextPoint(pt[0], pt[1], 0.0)
+    # close the polygon
+    pt = poly[0]
+    p.InsertNextPoint(pt[0], pt[1], 0.0)
+
+    writer = vtk.vtkStructuredGridWriter()
+    writer.SetFileName(fname)
+    writer.SetInputData(g)
+    writer.Write()
 
 # ============================================================
 # VTK writer (masked interior to avoid plotting inside obstacle)
 # ============================================================
 
 def write_vtr(fname, u, v, p, Lx, Ly, chi_p=None):
+
     Nx, Ny = p.shape
 
     # staggered -> cell centers
@@ -743,9 +765,10 @@ def step(u, v, p, params, masks, normals, bands, uin_fun, poly_grid):
     u_next, v_next = enforce_slip_obstacle(u_next, v_next, dx, dy, poly_grid)
 
 
-    # Mask obstacle interior (robustness)
-    u_next *= (1.0 - chi_u)
-    v_next *= (1.0 - chi_v)
+    # maybe we don't need to do this?
+    # # Mask obstacle interior (robustness)
+    # u_next *= (1.0 - chi_u)
+    # v_next *= (1.0 - chi_v)
 
     # Final BCs
     apply_wall_slip(u_next, v_next)
@@ -761,6 +784,7 @@ def step(u, v, p, params, masks, normals, bands, uin_fun, poly_grid):
 # ============================================================
 
 def run_channel_with_obstacle_inout():
+
     # Domain & resolution
     Lx, Ly = 2.0, 1.0
     Nx, Ny = 64, 32
@@ -794,7 +818,7 @@ def run_channel_with_obstacle_inout():
     normals = build_face_normals(Lx, Ly, Nx, Ny, poly)
 
     # Thin band around obstacle (wider band helps at corners)
-    band_thickness = 0.25 * min(dx, dy)
+    band_thickness = 0.1 * min(dx, dy) # 0.25 * min(dx, dy)
     band_u, band_v = build_face_band(Lx, Ly, Nx, Ny, poly, band_thickness)
 
     # Fields
@@ -808,6 +832,8 @@ def run_channel_with_obstacle_inout():
         helmholtz_iters=60,
         n_ib_iter=2
     )
+
+    write_poly(f'ibm_cgrid_channel_poly.vtk', poly)
 
     nsteps = 1000
     for istep in range(nsteps):
