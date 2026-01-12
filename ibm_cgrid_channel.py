@@ -41,7 +41,11 @@ except Exception:
         return wrapper
     def prange(*args):
         return range(*args)
-    
+
+# ============================================================
+# VTK writer for the immersed object contour
+# ============================================================
+
 def write_poly(fname, poly):
 
     n = len(poly)
@@ -58,9 +62,12 @@ def write_poly(fname, poly):
     pt = poly[0]
     p.InsertNextPoint(pt[0], pt[1], 0.0)
 
-    writer = vtk.vtkStructuredGridWriter()
+    writer = vtk.vtkXMLStructuredGridWriter()
     writer.SetFileName(fname)
     writer.SetInputData(g)
+    
+    # Optional: Set data mode (Binary, Ascii, or Appended)
+    # writer.SetDataModeToBinary() 
     writer.Write()
 
 # ============================================================
@@ -833,7 +840,7 @@ def run_channel_with_obstacle_inout():
         n_ib_iter=2
     )
 
-    write_poly(f'ibm_cgrid_channel_poly.vtk', poly)
+    write_poly(f'ibm_cgrid_channel_poly.vts', poly)
 
     nsteps = 1000
     for istep in range(nsteps):
