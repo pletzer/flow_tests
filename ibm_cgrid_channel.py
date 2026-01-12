@@ -2,6 +2,8 @@
 """
 Immersed Boundary Method (IBM)
 
+Cartesian finite‑difference solver with a hybrid Penalization + Direct‑forcing IBM
+
 2D incompressible Navier-Stokes solver on an Arakawa C-grid
 Channel flow with inflow/outflow BCs, free-slip walls, and a polygonal immersed obstacle.
 
@@ -767,7 +769,7 @@ def run_channel_with_obstacle_inout():
     # Fluid params
     rho = 1.0
     nu  = 0.01
-    fx  = 0.0
+    fx  = 0.0 # body force in the x direction
 
     # Inflow profile (uniform)
     def uin_fun(y):
@@ -775,9 +777,10 @@ def run_channel_with_obstacle_inout():
         return U0 * np.ones_like(y)
 
     # Polygon obstacle (diamond)
-    cx, cy = 0.3, 0.0 # 0.5
+    cx, cy = 0.3, 0.3 # 0.5
     w, h = 0.5, 0.3
-    # must be in anticlockwise direction TO CHECK!!!!!
+    # must be in anticlockwise direction TO CHECK!!!!! Actually, it looks like we need 
+    # to go clockwise!!!
     #poly = [(cx - w/2, cy), (cx, cy + h/2), (cx + w/2, cy), ] # (cx, cy - h/2)]
     poly = [(cx, cy), (cx + w, cy + h), (cx + w, cy), ] # (cx, cy - h/2)]
     #poly = [(cx - w/2, cy), (cx + w/2, cy), (cx, cy + h)] # these don't work
@@ -791,7 +794,7 @@ def run_channel_with_obstacle_inout():
     normals = build_face_normals(Lx, Ly, Nx, Ny, poly)
 
     # Thin band around obstacle (wider band helps at corners)
-    band_thickness = 1.0 * min(dx, dy)
+    band_thickness = 0.25 * min(dx, dy)
     band_u, band_v = build_face_band(Lx, Ly, Nx, Ny, poly, band_thickness)
 
     # Fields
